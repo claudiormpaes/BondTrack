@@ -13,7 +13,7 @@ def executar_automacao_snd():
         print("🛰️ SND: Usando Chrome local para evitar erro de certificado...")
         try:
             # channel="chrome" usa o seu navegador da máquina
-            browser = p.chromium.launch(channel="chrome", headless=True)
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
             page = browser.new_page()
             page.goto("https://www.debentures.com.br/exploreosnd/consultaadados/emissoesdedebentures/caracteristicas_f.asp?tip_deb=publicas")
             page.click("input[name='Submit']")
