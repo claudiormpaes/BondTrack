@@ -96,7 +96,7 @@ with st.sidebar:
     # Logo
     logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
     if os.path.exists(logo_path):
-        st.image(logo_path)
+       st.image(logo_path, use_column_width=True)
     else:
         st.title("BondTrack")
     
