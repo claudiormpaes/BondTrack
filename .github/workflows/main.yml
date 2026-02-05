@@ -23,4 +23,4 @@ jobs:
           playwright install chromium # Se o extrator usa Playwright
 
       - name: Executar Script
-        run: python mail_etl.py
+        run: python main_etl.py
