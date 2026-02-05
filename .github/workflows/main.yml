@@ -1,0 +1,26 @@
+name: Rodar ETL Diário
+
+on:
+  schedule:
+    - cron: '0 11 * * 1-5' # Roda às 07:00 BRT (10:00 UTC) de Seg a Sex
+  workflow_dispatch:      # Permite rodar manualmente também
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v3
+
+      - name: Configurar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependências
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium # Se o extrator usa Playwright
+
+      - name: Executar Script
+        run: python mail_etl.py
