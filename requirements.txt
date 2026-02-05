@@ -1,0 +1,15 @@
+# BondTrack - Plataforma de Análise de Debêntures
+# Dependências Python
+
+streamlit>=1.10.0
+pandas==2.1.4
+plotly==5.18.0
+numpy==1.26.3
+
+# ETL e Web Scraping
+requests==2.31.0
+playwright==1.41.0
+
+# Opcional: Para desenvolvimento
+pytest==7.4.3
+black==23.12.1
