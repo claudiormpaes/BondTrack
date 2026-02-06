@@ -2,25 +2,43 @@ name: Rodar ETL Diário
 
 on:
   schedule:
-    - cron: '0 11 * * 1-5' # Roda às 07:00 BRT (10:00 UTC) de Seg a Sex
-  workflow_dispatch:      # Permite rodar manualmente também
+    - cron: '0 11 * * 1-5' # Roda às 08:00 BRT (11:00 UTC)
+  workflow_dispatch:      # Permite rodar manualmente
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write     # Permissão necessária para salvar o banco no repo
+    
     steps:
       - name: Checkout código
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Configurar Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip' # Acelera as próximas rodadas
 
       - name: Instalar dependências
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
-          playwright install chromium # Se o extrator usa Playwright
 
-      - name: Executar Script
+      - name: Instalar Playwright e Dependências de Sistema
+        run: playwright install chromium --with-deps
+
+      - name: Executar Script ETL
         run: python main_etl.py
+        env:
+          PYTHONPATH: .
+
+      - name: Salvar Dados no Repositório (Git Push)
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "actions@github.com"
+          git add data/*.db
+          # O comando abaixo evita erro se não houver dados novos
+          git commit -m "Auto-update DB: $(date +'%d/%m/%Y %H:%M')" || echo "Sem mudanças para salvar"
+          git push
