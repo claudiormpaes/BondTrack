@@ -42,3 +42,21 @@ def rodar_scripts():
 
 if __name__ == "__main__":
     rodar_scripts()
+
+import sqlite3
+
+def check_db_stats():
+    conn = sqlite3.connect("data/debentures_anbima.db")
+    cursor = conn.cursor()
+    tabelas = ['cadastro_snd', 'mercado_secundario', 'negociacao_snd']
+    print("\n📊 STATUS ATUAL DO BANCO:")
+    for t in tabelas:
+        try:
+            count = cursor.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+            last_date = cursor.execute(f"SELECT MAX(data_referencia) FROM {t}").fetchone()[0]
+            print(f"- Tabela {t}: {count} registros (Última data: {last_date})")
+        except:
+            print(f"- Tabela {t}: Erro ao ler ou tabela inexistente.")
+    conn.close()
+
+# Chame check_db_stats() no final do seu main_etl.py
