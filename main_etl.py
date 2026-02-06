@@ -5,7 +5,7 @@ import datetime
 scripts = [
     "extrator_snd.py",
     "etl_curvas_anbima.py",
-    # "seu_terceiro_script.py" 
+    "etl_precos_snd.py" 
 ]
 
 def rodar_scripts():
