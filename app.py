@@ -1,5 +1,13 @@
 """
 BondTrack - Plataforma Profissional de Análise de Debêntures
+
+# Código temporário para debug
+import os
+db_mtime = os.path.getmtime(engine.DB_PATH)
+st.write(f"Última modificação do arquivo DB: {datetime.fromtimestamp(db_mtime)}")
+st.write(f"Caminho do banco: {engine.DB_PATH}")
+st.write(f"Datas encontradas: {engine.get_available_dates()}")
+
 Entry Point e Landing Page
 """
 import streamlit as st
