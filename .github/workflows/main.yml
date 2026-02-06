@@ -2,14 +2,16 @@ name: Rodar ETL Diário
 
 on:
   schedule:
-    - cron: '0 11 * * 1-5' # Roda às 08:00 BRT (11:00 UTC)
-  workflow_dispatch:      # Permite rodar manualmente
+    # Roda às 09h, 11h e 14h (Horário de Brasília)
+    # 12 = 09h BRT | 14 = 11h BRT | 17 = 14h BRT
+    - cron: '0 12,14,17 * * 1-5' 
+  workflow_dispatch:      # Permite rodar manualmente a qualquer momento
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write     # Permissão necessária para salvar o banco no repo
+      contents: write     # Necessário para salvar o banco de dados no repositório
     
     steps:
       - name: Checkout código
@@ -19,7 +21,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: 'pip' # Acelera as próximas rodadas
+          cache: 'pip'
 
       - name: Instalar dependências
         run: |
@@ -39,6 +41,6 @@ jobs:
           git config --global user.name "GitHub Action"
           git config --global user.email "actions@github.com"
           git add data/*.db
-          # O comando abaixo evita erro se não houver dados novos
+          # O commit só acontece se houver alteração real no banco
           git commit -m "Auto-update DB: $(date +'%d/%m/%Y %H:%M')" || echo "Sem mudanças para salvar"
           git push
