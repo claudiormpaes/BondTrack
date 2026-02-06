@@ -1,7 +1,11 @@
 import subprocess
 import datetime
+import sys
 
-# Lista dos scripts que você quer rodar
+# Lista dos scripts na ordem correta de execução
+# 1. Busca os dados brutos
+# 2. Processa as curvas de juros (benchmark)
+# 3. Processa preços e taxas para o Mercado Secundário
 scripts = [
     "extrator_snd.py",
     "etl_curvas_anbima.py",
@@ -9,31 +13,32 @@ scripts = [
 ]
 
 def rodar_scripts():
-    logs = []
     print(f"🚀 Iniciando Rotina de Dados - {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}")
     print("-" * 50)
+    
+    resultados = {}
 
     for script in scripts:
         print(f"⏳ Executando: {script}...")
         try:
             # Executa o script e espera terminar
+            # O check=True faz o Python levantar um erro se o script falhar
             resultado = subprocess.run(["python", script], capture_output=True, text=True, check=True)
-            logs.append(f"✅ {script}: SUCESSO")
             print(f"✅ {script} concluído com sucesso.")
+            resultados[script] = "SUCESSO"
         except subprocess.CalledProcessError as e:
-            logs.append(f"❌ {script}: ERRO")
-            print(f"❌ Erro em {script}:")
-            print(e.stderr) # Mostra o erro específico no terminal
-        except Exception as e:
-            logs.append(f"⚠️ {script}: FALHA CRÍTICA ({str(e)})")
+            print(f"❌ ERRO em {script}:")
+            print(f"Saída de erro: {e.stderr}")
+            resultados[script] = "FALHA"
+            # Opcional: interromper a fila se um script essencial falhar
+            # sys.exit(1) 
 
-    # Relatório Final no Terminal
-    print("\n" + "="*30)
+    print("\n" + "=" * 30)
     print("📋 RELATÓRIO FINAL DE EXECUÇÃO")
-    print("="*30)
-    for log in logs:
-        print(log)
-    print("="*30)
+    print("=" * 30)
+    for script, status in resultados.items():
+        print(f"{'✅' if status == 'SUCESSO' else '❌'} {script}: {status}")
+    print("=" * 30)
 
 if __name__ == "__main__":
     rodar_scripts()
