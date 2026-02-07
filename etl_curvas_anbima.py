@@ -1,140 +1,116 @@
-import pandas as pd
-import sqlite3
-import requests
-import numpy as np
-from scipy.interpolate import PchipInterpolator
-from io import BytesIO
+import subprocess
 import datetime
-import re
+import sys
+import sqlite3
+import os
 
-print("🚀 Iniciando ETL FAIR RATE (Motor: ANBIMA)...")
+# Lista dos scripts na ordem correta de execução
+scripts = [
+    "extrator_snd.py",
+    "etl_curvas_anbima.py",
+    "etl_precos_snd.py" 
+]
 
-# --- 1. CONFIGURAÇÕES ---
-URL_ANBIMA = "https://www.anbima.com.br/informacoes/est-termo/CZ-down.asp"
-
-def processar_dados_anbima():
-    # 1. Download do Arquivo
-    print("⏳ Baixando dados da ANBIMA...")
-    try:
-        response = requests.get(URL_ANBIMA)
-        response.raise_for_status()
-    except Exception as e:
-        print(f"❌ Erro no download: {e}")
-        return
-
-    # 2. Ler o conteúdo
-    conteudo = response.content.decode('latin-1')
-    linhas = conteudo.split('\n')
+def check_db_stats():
+    """
+    Verifica o status das tabelas nos bancos de dados REAIS na pasta data.
+    """
     
-    print("✅ Download concluído. Processando arquivo...")
-
-    # --- NOVO: IDENTIFICAR A DATA DO ARQUIVO ---
-    # A ANBIMA costuma colocar a data na primeira linha ou no nome do arquivo
-    # Vamos tentar achar um padrão de data (DD/MM/AAAA) nas primeiras 5 linhas
-    data_arquivo = datetime.datetime.now().strftime("%d/%m/%Y") # Valor padrão (hoje)
-    
-    padrao_data = r"(\d{2}/\d{2}/\d{4})" # Regex para procurar datas
-    
-    for i, linha in enumerate(linhas[:5]):
-        match = re.search(padrao_data, linha)
-        if match:
-            data_arquivo = match.group(1)
-            print(f"📅 Data de Referência encontrada no arquivo: {data_arquivo}")
-            break
-            
-    # Caso não ache (fallback), usamos a data informada por você para hoje
-    if "30/01/2026" in conteudo: # Verificação simples extra
-         pass 
-
-    # 3. Parser (Extração dos dados)
-    ettj_dados = {
-        'Vertices': [],
-        'ETTJ_IPCA': [],
-        'ETTJ_PREF': [],
-        'Inflacao_Implicita': []
+    # Mapeamento: Caminho do arquivo -> Tabelas esperadas nele
+    # Ajustado para procurar dentro da pasta 'data/'
+    bancos_esperados = {
+        "data/debentures_anbima.db": ["negociacao_snd"],
+        "data/curvas_anbima.db": ["curvas_anbima"]
     }
     
-    section = False
+    print("\n📊 STATUS ATUAL DO BANCO DE DADOS:")
+    print("-" * 50)
     
-    for linha in linhas:
-        linha = linha.strip()
+    # Diretório base onde o script está rodando
+    base_dir = os.path.dirname(__file__)
+
+    for db_name, tabelas in bancos_esperados.items():
+        # Monta o caminho completo (ex: /home/runner/.../data/debentures_anbima.db)
+        db_path = os.path.join(base_dir, db_name)
         
-        if "ETTJ Inflação Implicita" in linha or "ETTJ Inflação Implícita" in linha:
-            section = True
+        if not os.path.exists(db_path):
+            print(f"❌ Banco não encontrado: {db_name}")
             continue
             
-        if section and "Vertices" in linha:
-            continue 
+        print(f"🗄️  BANCO: {db_name}")
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
             
-        if section and (not linha or 'PREFIXADOS' in linha or 'Erro Título' in linha):
-            break
-            
-        if section and ';' in linha:
-            parts = linha.split(';')
-            try:
-                if len(parts) > 3:
-                    v = int(parts[0].replace('.', '').strip())
-                    ipca = float(parts[1].replace(',', '.').strip())
-                    pre = float(parts[2].replace(',', '.').strip())
-                    inf = float(parts[3].replace(',', '.').strip())
+            for t in tabelas:
+                try:
+                    # Conta o total de registros
+                    count = cursor.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
                     
-                    ettj_dados['Vertices'].append(v)
-                    ettj_dados['ETTJ_IPCA'].append(ipca)
-                    ettj_dados['ETTJ_PREF'].append(pre)
-                    ettj_dados['Inflacao_Implicita'].append(inf)
-            except:
-                continue
+                    # Tenta pegar a data mais recente
+                    # O nome da coluna de data varia entre os bancos
+                    col_data = 'data_referencia' if 'curvas' in t else 'data_base'
+                    
+                    try:
+                        last_date = cursor.execute(f"SELECT MAX({col_data}) FROM {t}").fetchone()[0]
+                    except:
+                        last_date = "N/A"
+                        
+                    print(f"   ✅ Tabela '{t}': {count} registros (Última atualização: {last_date})")
+                except Exception as e:
+                    print(f"   ⚠️  Tabela '{t}': Erro ao ler ({e})")
+            
+            conn.close()
+        except Exception as e:
+            print(f"   ❌ Erro ao conectar no banco: {e}")
+        print("-" * 30)
 
-    df = pd.DataFrame(ettj_dados)
+def rodar_scripts():
+    print(f"🚀 Iniciando Rotina de Dados - {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    print("=" * 60)
     
-    if df.empty:
-        print("⚠️ Atenção: A tabela veio vazia.")
-        return
+    resultados = {}
 
-    # 4. Interpolação PCHIP
-    print("➗ Calculando Interpolação (PCHIP)...")
-    df = df.sort_values('Vertices').drop_duplicates(subset=['Vertices'])
+    for script in scripts:
+        print(f"\n⏳ Executando: {script}...")
+        try:
+            # capture_output=True guarda o print() dos scripts filhos
+            # text=True garante que venha como string
+            resultado = subprocess.run(["python", script], capture_output=True, text=True, check=True)
+            
+            print(f"✅ {script} concluído com sucesso.")
+            
+            # Imprime o LOG (o que o script printou internamente)
+            if resultado.stdout:
+                print(f"📝 LOG DE SAÍDA ({script}):")
+                print("-" * 20)
+                print(resultado.stdout.strip())
+                print("-" * 20)
+            
+            resultados[script] = "SUCESSO"
+
+        except subprocess.CalledProcessError as e:
+            print(f"❌ ERRO CRÍTICO em {script}:")
+            print("🔻 Saída de Erro (Traceback):")
+            print(e.stderr)
+            
+            # Se houver stdout antes do erro, mostra também para ajudar no debug
+            if e.stdout:
+                print("🔻 Logs anteriores ao erro:")
+                print(e.stdout)
+                
+            resultados[script] = "FALHA"
+            # Continua para o próximo script mesmo com erro (opcional)
+
+    print("\n" + "=" * 60)
+    print("📋 RELATÓRIO FINAL DE EXECUÇÃO")
+    print("=" * 60)
+    for script, status in resultados.items():
+        icon = '✅' if status == 'SUCESSO' else '❌'
+        print(f"{icon} {script}: {status}")
     
-    max_dias = df['Vertices'].max()
-    novos_vertices = np.arange(1, max_dias + 1)
-    
-    pchip_ipca = PchipInterpolator(df['Vertices'], df['ETTJ_IPCA'])
-    pchip_pre = PchipInterpolator(df['Vertices'], df['ETTJ_PREF'])
-    pchip_inf = PchipInterpolator(df['Vertices'], df['Inflacao_Implicita'])
-    
-    # Gera o DataFrame final
-    df_final = pd.DataFrame({
-        'dias_corridos': novos_vertices,
-        'taxa_ipca': pchip_ipca(novos_vertices),
-        'taxa_pre': pchip_pre(novos_vertices),
-        'inflacao_implicita': pchip_inf(novos_vertices)
-    })
-    
-    # --- NOVO: ADICIONAR A COLUNA "E" (DATA) ---
-    df_final['data_referencia'] = data_arquivo
-    
-    # 5. Salvar no Banco
-    import os
-    db_dir = os.path.join(os.path.dirname(__file__), 'data')
-    if not os.path.exists(db_dir):
-        os.makedirs(db_dir)
-    db_path = os.path.join(db_dir, 'curvas_anbima.db')
-    conn = sqlite3.connect(db_path)
-    
-    # Salva tabela (substituindo a antiga)
-    df_final.to_sql('curvas_anbima', conn, if_exists='replace', index=False)
-    
-    # Atualiza metadata
-    cursor = conn.cursor()
-    cursor.execute("CREATE TABLE IF NOT EXISTS metadata (chave TEXT PRIMARY KEY, valor TEXT)")
-    # Agora salvamos a data do ARQUIVO, não a data de hoje (hora do download)
-    cursor.execute("INSERT OR REPLACE INTO metadata (chave, valor) VALUES ('ultima_atualizacao', ?)", (data_arquivo,))
-    
-    conn.commit()
-    conn.close()
-    
-    print(f"💾 Sucesso! {len(df_final)} linhas salvas.")
-    print(f"✅ Coluna de Data adicionada: {data_arquivo}")
+    # Chama a verificação corrigida dos bancos
+    check_db_stats()
 
 if __name__ == "__main__":
-    processar_dados_anbima()
+    rodar_scripts()
