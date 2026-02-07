@@ -1,7 +1,7 @@
 """
 ETL para extrair dados de Volume Negociado do SND (Sistema Nacional de Debêntures)
 Captura preços de negociação e calcula volume total por ativo
-Versão Corrigida: Leitura Híbrida (HTML/TXT) e Busca Dinâmica de Cabeçalho
+Versão Otimizada para GitHub Actions
 """
 import os
 import pandas as pd
@@ -67,17 +67,22 @@ def extract_snd(data_alvo=None, headless=True, use_system_chrome=True):
         }
         
         browser = None
+        
+        # Só tenta usar o Chrome do sistema se for solicitado (evita delay no GitHub Actions)
         if use_system_chrome:
             try:
                 # Tenta canal Chrome estável
                 browser = p.chromium.launch(channel="chrome", **launch_args)
+                print("   ✅ Usando Chrome do Sistema.")
             except:
+                print("   ⚠️ Chrome do sistema não encontrado, tentando Chromium padrão...")
                 pass
         
         if browser is None:
             try:
-                # Tenta Chromium padrão
+                # Tenta Chromium padrão (Baixado pelo Playwright)
                 browser = p.chromium.launch(**launch_args)
+                print("   ✅ Usando Chromium (Playwright).")
             except Exception as e:
                 print(f"❌ [ERRO] Navegador não iniciado: {e}")
                 return None
@@ -273,10 +278,8 @@ def load_data(df):
         print(f"❌ Erro ao salvar no banco: {e}")
         return False
 
-
-if __name__ == "__main__":
-    # Execução principal
-    arquivo = extract_snd()
+def executar_etl_completo(headless=True, use_system_chrome=True):
+    arquivo = extract_snd(headless=headless, use_system_chrome=use_system_chrome)
     if arquivo:
         df_tratado = transform_data(arquivo)
         load_data(df_tratado)
@@ -286,3 +289,17 @@ if __name__ == "__main__":
             os.remove(arquivo)
         except:
             pass
+
+if __name__ == "__main__":
+    # Detecta se está rodando no GitHub Actions
+    is_github_actions = os.getenv('GITHUB_ACTIONS') == 'true'
+    
+    # Configuração Dinâmica:
+    # Se for GitHub: NÃO tenta usar Chrome do sistema (False) e roda escondido (headless=True)
+    # Se for PC Local: Tenta usar Chrome do sistema (True) e roda visível para debug
+    headless_mode = True if is_github_actions else "--visible" not in sys.argv
+    system_chrome = False if is_github_actions else True
+    
+    print(f"⚙️ Configuração de Ambiente: GitHub={is_github_actions} | Headless={headless_mode} | SystemChrome={system_chrome}")
+    
+    executar_etl_completo(headless=headless_mode, use_system_chrome=system_chrome)
