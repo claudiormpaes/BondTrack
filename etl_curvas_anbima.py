@@ -1,116 +1,141 @@
-import subprocess
-import datetime
-import sys
+import pandas as pd
 import sqlite3
+import requests
+import numpy as np
+from scipy.interpolate import PchipInterpolator
+import datetime
+import re
 import os
+import sys
 
-# Lista dos scripts na ordem correta de execução
-scripts = [
-    "extrator_snd.py",
-    "etl_curvas_anbima.py",
-    "etl_precos_snd.py" 
-]
+# --- CONFIGURAÇÕES ---
+URL_ANBIMA = "https://www.anbima.com.br/informacoes/est-termo/CZ-down.asp"
 
-def check_db_stats():
-    """
-    Verifica o status das tabelas nos bancos de dados REAIS na pasta data.
-    """
+# Define caminhos absolutos para evitar erro de pasta
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+DB_PATH = os.path.join(DATA_DIR, "curvas_anbima.db")
+
+# Garante que a pasta data existe
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
+
+def processar_dados_anbima():
+    print(f"🚀 Iniciando ETL FAIR RATE (Motor: ANBIMA)...")
     
-    # Mapeamento: Caminho do arquivo -> Tabelas esperadas nele
-    # Ajustado para procurar dentro da pasta 'data/'
-    bancos_esperados = {
-        "data/debentures_anbima.db": ["negociacao_snd"],
-        "data/curvas_anbima.db": ["curvas_anbima"]
+    # 1. Download do Arquivo
+    print("⏳ Baixando dados da ANBIMA...")
+    try:
+        response = requests.get(URL_ANBIMA)
+        response.raise_for_status()
+    except Exception as e:
+        print(f"❌ Erro no download: {e}")
+        return
+
+    # 2. Ler o conteúdo
+    conteudo = response.content.decode('latin-1')
+    linhas = conteudo.split('\n')
+    
+    print("✅ Download concluído. Processando arquivo...")
+
+    # --- IDENTIFICAR A DATA DO ARQUIVO ---
+    data_arquivo = datetime.datetime.now().strftime("%d/%m/%Y") 
+    padrao_data = r"(\d{2}/\d{2}/\d{4})"
+    
+    for linha in linhas[:10]:
+        match = re.search(padrao_data, linha)
+        if match:
+            data_arquivo = match.group(1)
+            print(f"📅 Data de Referência encontrada no arquivo: {data_arquivo}")
+            break
+            
+    # 3. Parser (Extração dos dados)
+    ettj_dados = {
+        'Vertices': [],
+        'ETTJ_IPCA': [],
+        'ETTJ_PREF': [],
+        'Inflacao_Implicita': []
     }
     
-    print("\n📊 STATUS ATUAL DO BANCO DE DADOS:")
-    print("-" * 50)
+    section = False
     
-    # Diretório base onde o script está rodando
-    base_dir = os.path.dirname(__file__)
-
-    for db_name, tabelas in bancos_esperados.items():
-        # Monta o caminho completo (ex: /home/runner/.../data/debentures_anbima.db)
-        db_path = os.path.join(base_dir, db_name)
+    for linha in linhas:
+        linha = linha.strip()
         
-        if not os.path.exists(db_path):
-            print(f"❌ Banco não encontrado: {db_name}")
+        # Identifica o início da tabela certa
+        if "ETTJ Inflação Implicita" in linha or "ETTJ Inflação Implícita" in linha:
+            section = True
             continue
             
-        print(f"🗄️  BANCO: {db_name}")
-        try:
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
+        if section and "Vertices" in linha:
+            continue 
             
-            for t in tabelas:
-                try:
-                    # Conta o total de registros
-                    count = cursor.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+        if section and (not linha or 'PREFIXADOS' in linha or 'Erro Título' in linha):
+            break
+            
+        if section and ';' in linha:
+            parts = linha.split(';')
+            try:
+                if len(parts) > 3:
+                    v = int(parts[0].replace('.', '').strip())
+                    ipca = float(parts[1].replace(',', '.').strip())
+                    pre = float(parts[2].replace(',', '.').strip())
+                    inf = float(parts[3].replace(',', '.').strip())
                     
-                    # Tenta pegar a data mais recente
-                    # O nome da coluna de data varia entre os bancos
-                    col_data = 'data_referencia' if 'curvas' in t else 'data_base'
-                    
-                    try:
-                        last_date = cursor.execute(f"SELECT MAX({col_data}) FROM {t}").fetchone()[0]
-                    except:
-                        last_date = "N/A"
-                        
-                    print(f"   ✅ Tabela '{t}': {count} registros (Última atualização: {last_date})")
-                except Exception as e:
-                    print(f"   ⚠️  Tabela '{t}': Erro ao ler ({e})")
-            
-            conn.close()
-        except Exception as e:
-            print(f"   ❌ Erro ao conectar no banco: {e}")
-        print("-" * 30)
+                    ettj_dados['Vertices'].append(v)
+                    ettj_dados['ETTJ_IPCA'].append(ipca)
+                    ettj_dados['ETTJ_PREF'].append(pre)
+                    ettj_dados['Inflacao_Implicita'].append(inf)
+            except:
+                continue
 
-def rodar_scripts():
-    print(f"🚀 Iniciando Rotina de Dados - {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}")
-    print("=" * 60)
+    df = pd.DataFrame(ettj_dados)
     
-    resultados = {}
+    if df.empty:
+        print("⚠️ Atenção: A tabela veio vazia. Verifique se o layout da ANBIMA mudou.")
+        return
 
-    for script in scripts:
-        print(f"\n⏳ Executando: {script}...")
-        try:
-            # capture_output=True guarda o print() dos scripts filhos
-            # text=True garante que venha como string
-            resultado = subprocess.run(["python", script], capture_output=True, text=True, check=True)
-            
-            print(f"✅ {script} concluído com sucesso.")
-            
-            # Imprime o LOG (o que o script printou internamente)
-            if resultado.stdout:
-                print(f"📝 LOG DE SAÍDA ({script}):")
-                print("-" * 20)
-                print(resultado.stdout.strip())
-                print("-" * 20)
-            
-            resultados[script] = "SUCESSO"
-
-        except subprocess.CalledProcessError as e:
-            print(f"❌ ERRO CRÍTICO em {script}:")
-            print("🔻 Saída de Erro (Traceback):")
-            print(e.stderr)
-            
-            # Se houver stdout antes do erro, mostra também para ajudar no debug
-            if e.stdout:
-                print("🔻 Logs anteriores ao erro:")
-                print(e.stdout)
-                
-            resultados[script] = "FALHA"
-            # Continua para o próximo script mesmo com erro (opcional)
-
-    print("\n" + "=" * 60)
-    print("📋 RELATÓRIO FINAL DE EXECUÇÃO")
-    print("=" * 60)
-    for script, status in resultados.items():
-        icon = '✅' if status == 'SUCESSO' else '❌'
-        print(f"{icon} {script}: {status}")
+    # 4. Interpolação PCHIP
+    print("➗ Calculando Interpolação (PCHIP)...")
+    df = df.sort_values('Vertices').drop_duplicates(subset=['Vertices'])
     
-    # Chama a verificação corrigida dos bancos
-    check_db_stats()
+    max_dias = df['Vertices'].max()
+    novos_vertices = np.arange(1, max_dias + 1)
+    
+    try:
+        pchip_ipca = PchipInterpolator(df['Vertices'], df['ETTJ_IPCA'])
+        pchip_pre = PchipInterpolator(df['Vertices'], df['ETTJ_PREF'])
+        pchip_inf = PchipInterpolator(df['Vertices'], df['Inflacao_Implicita'])
+        
+        df_final = pd.DataFrame({
+            'dias_corridos': novos_vertices,
+            'taxa_ipca': pchip_ipca(novos_vertices),
+            'taxa_pre': pchip_pre(novos_vertices),
+            'inflacao_implicita': pchip_inf(novos_vertices)
+        })
+        
+        df_final['data_referencia'] = data_arquivo
+        
+        # 5. Salvar no Banco
+        print(f"💾 Salvando banco em: {DB_PATH}")
+        conn = sqlite3.connect(DB_PATH)
+        
+        # Salva tabela (append ou replace? Replace para atualizar a curva do dia)
+        # Se quiser histórico, mude para append, mas curvas costumam ser sobrescritas ou ter data na chave
+        df_final.to_sql('curvas_anbima', conn, if_exists='replace', index=False)
+        
+        # Metadata
+        cursor = conn.cursor()
+        cursor.execute("CREATE TABLE IF NOT EXISTS metadata (chave TEXT PRIMARY KEY, valor TEXT)")
+        cursor.execute("INSERT OR REPLACE INTO metadata (chave, valor) VALUES ('ultima_atualizacao', ?)", (data_arquivo,))
+        
+        conn.commit()
+        conn.close()
+        
+        print(f"✅ Sucesso! {len(df_final)} linhas salvas.")
+        
+    except Exception as e:
+        print(f"❌ Erro na interpolação ou salvamento: {e}")
 
 if __name__ == "__main__":
-    rodar_scripts()
+    processar_dados_anbima()
