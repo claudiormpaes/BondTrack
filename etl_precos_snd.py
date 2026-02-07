@@ -1,8 +1,3 @@
-"""
-ETL para extrair dados de Volume Negociado do SND (Sistema Nacional de Debêntures)
-Captura preços de negociação e calcula volume total por ativo
-Versão Otimizada para GitHub Actions
-"""
 import os
 import pandas as pd
 import sqlite3
@@ -16,290 +11,211 @@ import sys
 URL_FORM = "https://www.debentures.com.br/exploreosnd/consultaadados/mercadosecundario/precosdenegociacao_f.asp"
 URL_BASE_DOWNLOAD = "https://www.debentures.com.br/exploreosnd/consultaadados/mercadosecundario/precosdenegociacao_e.asp"
 
-# Caminho do banco de dados (Salva dentro da pasta data/)
-BASE_DIR = os.path.dirname(__file__)
+# Caminhos Absolutos
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "debentures_anbima.db")
 DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads_temp")
 
-# Garante que os diretórios existem
-if not os.path.exists(DATA_DIR):
-    os.makedirs(DATA_DIR)
-if not os.path.exists(DOWNLOAD_DIR):
-    os.makedirs(DOWNLOAD_DIR)
+if not os.path.exists(DATA_DIR): os.makedirs(DATA_DIR)
+if not os.path.exists(DOWNLOAD_DIR): os.makedirs(DOWNLOAD_DIR)
 
+def log(msg):
+    print(f"[ETL PREÇOS] {msg}")
+    sys.stdout.flush()
 
 def get_d_minus_1():
-    """Retorna D-1 (dia útil anterior)"""
     hoje = datetime.now()
-    if hoje.weekday() == 0:  # Segunda
-        d1 = hoje - timedelta(days=3)
-    elif hoje.weekday() == 6:  # Domingo
-        d1 = hoje - timedelta(days=2)
-    else:
-        d1 = hoje - timedelta(days=1)
+    if hoje.weekday() == 0: d1 = hoje - timedelta(days=3)
+    elif hoje.weekday() == 6: d1 = hoje - timedelta(days=2)
+    else: d1 = hoje - timedelta(days=1)
     return d1
 
-
 def extract_snd(data_alvo=None, headless=True, use_system_chrome=True):
-    """
-    Extrai dados de negociação do SND via web scraping
-    """
-    print("🚀 [ETL] Iniciando Extração SND - Preços de Negociação...")
+    log("🚀 Iniciando Extração (Web Scraping)...")
     
-    if data_alvo is None:
-        d1_obj = get_d_minus_1()
-    else:
-        d1_obj = data_alvo
-        
+    d1_obj = data_alvo if data_alvo else get_d_minus_1()
     data_br = d1_obj.strftime('%d/%m/%Y')
     data_link = d1_obj.strftime('%Y%m%d')
     
-    print(f"📅 [ETL] Data alvo: {data_br}")
+    log(f"📅 Data alvo: {data_br}")
     arquivo_baixado = None
 
     with sync_playwright() as p:
-        print("🕵️ [BROWSER] Abrindo navegador...")
-        
-        launch_args = {
-            "headless": headless,
-            "args": ["--ignore-certificate-errors", "--disable-blink-features=AutomationControlled"]
-        }
-        
         browser = None
+        launch_args = {"headless": headless, "args": ["--ignore-certificate-errors"]}
         
-        # Só tenta usar o Chrome do sistema se for solicitado (evita delay no GitHub Actions)
+        # Tenta Chrome do Sistema (se permitido)
         if use_system_chrome:
             try:
-                # Tenta canal Chrome estável
                 browser = p.chromium.launch(channel="chrome", **launch_args)
-                print("   ✅ Usando Chrome do Sistema.")
+                log("✅ Usando Chrome do Sistema.")
             except:
-                print("   ⚠️ Chrome do sistema não encontrado, tentando Chromium padrão...")
                 pass
         
+        # Fallback para Chromium
         if browser is None:
             try:
-                # Tenta Chromium padrão (Baixado pelo Playwright)
                 browser = p.chromium.launch(**launch_args)
-                print("   ✅ Usando Chromium (Playwright).")
+                log("✅ Usando Chromium (Playwright).")
             except Exception as e:
-                print(f"❌ [ERRO] Navegador não iniciado: {e}")
+                log(f"❌ Erro crítico: Navegador não abriu. {e}")
                 return None
         
         context = browser.new_context(accept_downloads=True, ignore_https_errors=True)
         page = context.new_page()
 
         try:
-            # Acessa home para gerar cookie de sessão
+            # Acessa para pegar cookie
             page.goto(URL_FORM, timeout=60000)
             
-            # Link direto para download (Bypass no formulário)
-            link_direto = f"{URL_BASE_DOWNLOAD}?op_exc=False&emissor=&isin=&ativo=&dt_ini={data_link}&dt_fim={data_link}"
-            print(f"🔗 [SNIPER] Baixando: {link_direto}")
+            # Download Direto
+            link = f"{URL_BASE_DOWNLOAD}?op_exc=False&emissor=&isin=&ativo=&dt_ini={data_link}&dt_fim={data_link}"
+            log(f"🔗 Baixando: {link}")
             
             with page.expect_download(timeout=60000) as download_info:
-                try:
-                    page.goto(link_direto)
-                except:
-                    pass # Ignora erro de navegação se o download iniciar
+                try: page.goto(link)
+                except: pass
 
             download = download_info.value
-            nome_arquivo = f"snd_precos_{data_link}.xls"
-            caminho_final = os.path.join(DOWNLOAD_DIR, nome_arquivo)
-            download.save_as(caminho_final)
-            print(f"✅ [SUCESSO] Arquivo salvo: {caminho_final}")
-            arquivo_baixado = caminho_final
+            fname = f"snd_precos_{data_link}.xls"
+            caminho = os.path.join(DOWNLOAD_DIR, fname)
+            download.save_as(caminho)
+            log(f"✅ Arquivo salvo em: {caminho}")
+            arquivo_baixado = caminho
 
         except Exception as e:
-            print(f"❌ [ERRO EXTRAÇÃO]: {e}")
+            log(f"❌ Erro no download: {e}")
         finally:
             browser.close()
             
     return arquivo_baixado
 
-
 def transform_data(file_path):
-    """
-    Transforma os dados brutos. Tenta ler HTML e TXT.
-    """
-    if not file_path or not os.path.exists(file_path):
-        return None
-    print("⚙️ [TRANSFORM] Processando arquivo...")
+    if not file_path or not os.path.exists(file_path): return None
+    log("⚙️ Processando arquivo...")
     
     df = None
     
-    # 1. TENTATIVA HTML (SND costuma mandar HTML com extensão .xls)
+    # 1. Tenta ler como HTML
     try:
         with open(file_path, 'rb') as f:
             content = f.read().decode('latin-1', errors='ignore')
-        
-        # Busca tabelas
         dfs = pd.read_html(io.StringIO(content), decimal=',', thousands='.')
         for d in dfs:
-            # Verifica se é a tabela certa procurando colunas chave
-            if any(col in str(d.columns) for col in ['Código', 'Emissor', 'Preço']):
+            if any(c in str(d.columns) for c in ['Código', 'Emissor', 'Preço']):
                 df = d
-                print("   -> Formato detectado: HTML Table")
+                log("   -> Formato HTML detectado.")
                 break
-    except Exception as e:
-        print(f"   -> Leitura HTML falhou, tentando texto...")
+    except: pass
 
-    # 2. TENTATIVA TEXTO/TAB (Fallback)
+    # 2. Tenta ler como TXT
     if df is None:
         try:
-            # Lê tudo e procura onde começa o cabeçalho
             df = pd.read_csv(file_path, sep='\t', encoding='latin-1', on_bad_lines='skip')
-            
-            # Se a primeira linha não for cabeçalho, procura ela
-            colunas_chave = ['Código', 'Emissor', 'PU Médio', 'Quantidade']
-            
-            # Verifica se o cabeçalho está nas primeiras 20 linhas
-            if not any(k in str(df.columns) for k in colunas_chave):
-                print("   -> Procurando cabeçalho nas linhas...")
+            # Busca cabeçalho dinâmico
+            cols_chave = ['Código', 'Emissor', 'PU Médio']
+            if not any(k in str(df.columns) for k in cols_chave):
+                log("   -> Procurando cabeçalho nas linhas...")
                 for i in range(1, 20):
                     df_temp = pd.read_csv(file_path, sep='\t', encoding='latin-1', skiprows=i, on_bad_lines='skip')
-                    if any(k in str(df_temp.columns) for k in colunas_chave):
+                    if any(k in str(df_temp.columns) for k in cols_chave):
                         df = df_temp
-                        print(f"   -> Cabeçalho encontrado na linha {i}")
+                        log(f"   -> Cabeçalho achado na linha {i}")
                         break
         except Exception as e:
-            print(f"❌ Erro ao ler arquivo: {e}")
+            log(f"❌ Erro ao ler arquivo: {e}")
             return None
 
     if df is None or df.empty:
-        print("⚠️ [AVISO] Não foi possível extrair dados estruturados.")
+        log("⚠️ Arquivo vazio ou ilegível.")
         return None
 
-    # --- NORMALIZAÇÃO DE COLUNAS ---
-    # Remove espaços e converte para string
+    # Normalização
     df.columns = [str(c).strip() for c in df.columns]
-    
     mapa = {}
-    for col in df.columns:
-        c_low = col.lower()
-        if 'código' in c_low or 'codigo' in c_low: mapa[col] = 'codigo'
-        elif 'emissor' in c_low: mapa[col] = 'emissor'
-        elif 'mínimo' in c_low or 'minimo' in c_low: mapa[col] = 'pu_minimo'
-        elif 'médio' in c_low or 'medio' in c_low: mapa[col] = 'pu_medio'
-        elif 'máximo' in c_low or 'maximo' in c_low: mapa[col] = 'pu_maximo'
-        elif 'quantidade' in c_low: mapa[col] = 'quantidade'
-        elif 'negócios' in c_low: mapa[col] = 'numero_negocios'
-
+    for c in df.columns:
+        cl = c.lower()
+        if 'código' in cl or 'codigo' in cl: mapa[c] = 'codigo'
+        elif 'emissor' in cl: mapa[c] = 'emissor'
+        elif 'médio' in cl: mapa[c] = 'pu_medio'
+        elif 'quantidade' in cl: mapa[c] = 'quantidade'
+        elif 'negócios' in cl: mapa[c] = 'numero_negocios'
+        elif 'mínimo' in cl: mapa[c] = 'pu_minimo'
+        elif 'máximo' in cl: mapa[c] = 'pu_maximo'
+    
     df = df.rename(columns=mapa)
     
-    # Filtra apenas linhas com código válido
-    if 'codigo' in df.columns:
-        df = df[df['codigo'].notna()]
-        df = df[~df['codigo'].astype(str).str.contains('Código', case=False, na=False)]
-    else:
-        print("❌ Coluna 'Código' não encontrada.")
+    if 'codigo' not in df.columns:
+        log("❌ Coluna 'Código' não encontrada.")
         return None
+        
+    df = df[df['codigo'].notna()]
+    df = df[~df['codigo'].astype(str).str.contains('Código', case=False)]
 
-    # --- LIMPEZA DE DADOS ---
-    cols_num = ['pu_minimo', 'pu_medio', 'pu_maximo', 'quantidade', 'numero_negocios']
-    
-    for col in cols_num:
+    # Limpeza Numérica
+    for col in ['pu_medio', 'quantidade', 'pu_minimo', 'pu_maximo', 'numero_negocios']:
         if col in df.columns:
-            # Brasileiro (1.000,00) -> Python (1000.00)
-            df[col] = df[col].astype(str).str.replace('R$', '', regex=False)
-            df[col] = df[col].str.replace('.', '', regex=False)
-            df[col] = df[col].str.replace(',', '.', regex=False)
+            df[col] = df[col].astype(str).str.replace('R$', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         else:
             df[col] = 0
 
-    # Adiciona Datas
     df['data_base'] = get_d_minus_1().strftime('%Y-%m-%d')
+    df['volume_total'] = df['pu_medio'] * df['quantidade']
     df['data_atualizacao'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
-    # Calcula Volume
-    df['volume_total'] = df['pu_medio'] * df['quantidade']
+    # Padroniza Código
+    df['codigo'] = df['codigo'].astype(str).str.strip().str.upper()
     
-    # Formato Final
-    cols_finais = [
-        'data_base', 'codigo', 'emissor', 'pu_minimo', 'pu_medio', 
-        'pu_maximo', 'quantidade', 'numero_negocios', 'volume_total', 'data_atualizacao'
-    ]
-    
-    # Garante que todas colunas existem
-    for c in cols_finais:
+    cols_finais = ['data_base', 'codigo', 'emissor', 'pu_minimo', 'pu_medio', 'pu_maximo', 'quantidade', 'numero_negocios', 'volume_total', 'data_atualizacao']
+    for c in cols_finais: 
         if c not in df.columns: df[c] = None
             
-    df_final = df[cols_finais].copy()
-    
-    # Padroniza código
-    if 'codigo' in df_final.columns:
-        df_final['codigo'] = df_final['codigo'].astype(str).str.strip().str.upper()
-
-    print(f"📊 [DADOS] {len(df_final)} linhas processadas.")
-    return df_final
-
+    log(f"📊 {len(df)} linhas processadas com sucesso.")
+    return df[cols_finais]
 
 def load_data(df):
-    """Salva no SQLite"""
-    if df is None or df.empty:
-        return False
-        
-    print(f"💾 [LOAD] Salvando em: {DB_PATH}")
+    if df is None or df.empty: return
+    log(f"💾 Salvando no banco: {DB_PATH}")
     
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        
-        # Cria tabela se não existir
         cursor.execute("""
-        CREATE TABLE IF NOT EXISTS negociacao_snd (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            data_base TEXT,
-            codigo TEXT,
-            emissor TEXT,
-            pu_minimo REAL,
-            pu_medio REAL,
-            pu_maximo REAL,
-            quantidade INTEGER,
-            numero_negocios INTEGER,
-            volume_total REAL,
-            data_atualizacao TEXT
-        )
+            CREATE TABLE IF NOT EXISTS negociacao_snd (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                data_base TEXT, codigo TEXT, emissor TEXT,
+                pu_minimo REAL, pu_medio REAL, pu_maximo REAL,
+                quantidade INTEGER, numero_negocios INTEGER,
+                volume_total REAL, data_atualizacao TEXT
+            )
         """)
         
-        # Remove dados duplicados da mesma data para re-inserir
-        data_ref = df['data_base'].iloc[0]
-        cursor.execute("DELETE FROM negociacao_snd WHERE data_base = ?", (data_ref,))
+        # Remove duplicatas do dia
+        dt = df['data_base'].iloc[0]
+        cursor.execute("DELETE FROM negociacao_snd WHERE data_base = ?", (dt,))
         
         df.to_sql('negociacao_snd', conn, if_exists='append', index=False)
-        
         conn.commit()
         conn.close()
-        print("✅ Dados salvos com sucesso.")
-        return True
+        log("✅ Dados salvos com sucesso!")
     except Exception as e:
-        print(f"❌ Erro ao salvar no banco: {e}")
-        return False
-
-def executar_etl_completo(headless=True, use_system_chrome=True):
-    arquivo = extract_snd(headless=headless, use_system_chrome=use_system_chrome)
-    if arquivo:
-        df_tratado = transform_data(arquivo)
-        load_data(df_tratado)
-        
-        # Limpeza
-        try:
-            os.remove(arquivo)
-        except:
-            pass
+        log(f"❌ Erro de Banco: {e}")
 
 if __name__ == "__main__":
-    # Detecta se está rodando no GitHub Actions
-    is_github_actions = os.getenv('GITHUB_ACTIONS') == 'true'
+    # CONFIGURAÇÃO AUTOMÁTICA GITHUB VS LOCAL
+    is_github = os.getenv('GITHUB_ACTIONS') == 'true'
     
-    # Configuração Dinâmica:
-    # Se for GitHub: NÃO tenta usar Chrome do sistema (False) e roda escondido (headless=True)
-    # Se for PC Local: Tenta usar Chrome do sistema (True) e roda visível para debug
-    headless_mode = True if is_github_actions else "--visible" not in sys.argv
-    system_chrome = False if is_github_actions else True
+    # Se for GitHub: Roda escondido (Headless) e NÃO usa Chrome do Sistema
+    headless = True if is_github else False
+    use_system = False if is_github else True
     
-    print(f"⚙️ Configuração de Ambiente: GitHub={is_github_actions} | Headless={headless_mode} | SystemChrome={system_chrome}")
+    log(f"Ambiente: {'GITHUB' if is_github else 'LOCAL'} | Headless: {headless}")
     
-    executar_etl_completo(headless=headless_mode, use_system_chrome=system_chrome)
+    arquivo = extract_snd(headless=headless, use_system_chrome=use_system)
+    if arquivo:
+        df = transform_data(arquivo)
+        load_data(df)
+        try: os.remove(arquivo)
+        except: pass
