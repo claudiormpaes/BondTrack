@@ -4,7 +4,7 @@ on:
   schedule:
     # Roda às 09h, 11h e 14h (Horário de Brasília)
     # 12 = 09h BRT | 14 = 11h BRT | 17 = 14h BRT
-    - cron: '0 12,14,17 * * 1-5' 
+    - cron: '0 12,14,17 * * 2-6' 
   workflow_dispatch:      # Permite rodar manualmente a qualquer momento
 
 jobs:
