@@ -27,27 +27,20 @@ def log(msg):
 def get_data_target():
     """
     Retorna a data alvo para busca.
-    AJUSTADO: Busca o dia de HOJE (D0) se for dia útil.
+    Busca o dia de HOJE (D0) se for dia útil.
     Se for fim de semana, busca a Sexta-feira anterior.
     """
     hoje = datetime.now()
-    
-    # Se for Sábado (5), volta 1 dia -> Sexta
-    if hoje.weekday() == 5: 
+    if hoje.weekday() == 5: # Sábado -> Sexta
         return hoje - timedelta(days=1)
-    # Se for Domingo (6), volta 2 dias -> Sexta
-    elif hoje.weekday() == 6: 
+    elif hoje.weekday() == 6: # Domingo -> Sexta
         return hoje - timedelta(days=2)
-    
-    # Se for Seg-Sex, retorna HOJE
     return hoje
 
 def extract_snd(data_alvo=None, headless=True, use_system_chrome=True):
     log("🚀 Iniciando Extração (Web Scraping)...")
     
-    # Usa a nova lógica de data (Hoje)
     d_obj = data_alvo if data_alvo else get_data_target()
-    
     data_br = d_obj.strftime('%d/%m/%Y')
     data_link = d_obj.strftime('%Y%m%d')
     
@@ -76,10 +69,8 @@ def extract_snd(data_alvo=None, headless=True, use_system_chrome=True):
         page = context.new_page()
 
         try:
-            # Acessa home para cookie
             page.goto(URL_FORM, timeout=60000)
             
-            # Link Direto
             link = f"{URL_BASE_DOWNLOAD}?op_exc=False&emissor=&isin=&ativo=&dt_ini={data_link}&dt_fim={data_link}"
             log(f"🔗 Baixando dados de: {data_br}")
             
@@ -95,11 +86,11 @@ def extract_snd(data_alvo=None, headless=True, use_system_chrome=True):
             arquivo_baixado = caminho
 
         except Exception as e:
-            log(f"❌ Erro no download ou arquivo não disponível para hoje ({data_br}): {e}")
+            log(f"❌ Erro no download ou arquivo indisponível: {e}")
         finally:
             browser.close()
             
-    return arquivo_baixado, d_obj # Retorna também o objeto data para uso no dataframe
+    return arquivo_baixado, d_obj
 
 def transform_data(file_path, data_ref_obj):
     if not file_path or not os.path.exists(file_path): return None
@@ -132,7 +123,7 @@ def transform_data(file_path, data_ref_obj):
         except: pass
 
     if df is None or df.empty:
-        log("⚠️ Arquivo vazio ou ilegível (Talvez o mercado não tenha fechado ainda).")
+        log("⚠️ Arquivo vazio ou ilegível.")
         return None
 
     # Normalização
@@ -151,12 +142,20 @@ def transform_data(file_path, data_ref_obj):
     df = df.rename(columns=mapa)
     
     if 'codigo' not in df.columns:
-        log("❌ Coluna 'Código' não encontrada.")
+        log("❌ Coluna 'Código' não encontrada após mapeamento.")
         return None
         
+    # Filtros
     df = df[df['codigo'].notna()]
     df = df[~df['codigo'].astype(str).str.contains('Código', case=False)]
 
+    # --- CORREÇÃO DO ERRO ---
+    # Verifica se sobrou algo DEPOIS dos filtros
+    if df.empty:
+        log("⚠️ O arquivo existe, mas não contém registros de negociação válidos após a limpeza.")
+        return None
+
+    # Limpeza Numérica
     for col in ['pu_medio', 'quantidade', 'pu_minimo', 'pu_maximo', 'numero_negocios']:
         if col in df.columns:
             df[col] = df[col].astype(str).str.replace('R$', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
@@ -164,7 +163,6 @@ def transform_data(file_path, data_ref_obj):
         else:
             df[col] = 0
 
-    # Usa a data passada como parâmetro (DATA DO ARQUIVO)
     df['data_base'] = data_ref_obj.strftime('%Y-%m-%d')
     df['volume_total'] = df['pu_medio'] * df['quantidade']
     df['data_atualizacao'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -175,6 +173,7 @@ def transform_data(file_path, data_ref_obj):
     for c in cols_finais: 
         if c not in df.columns: df[c] = None
             
+    # Agora é seguro acessar iloc[0] pois garantimos que não está empty
     log(f"📊 {len(df)} linhas processadas para a data {df['data_base'].iloc[0]}.")
     return df[cols_finais]
 
@@ -195,7 +194,6 @@ def load_data(df):
             )
         """)
         
-        # Remove duplicatas do dia
         dt = df['data_base'].iloc[0]
         cursor.execute("DELETE FROM negociacao_snd WHERE data_base = ?", (dt,))
         
@@ -213,7 +211,6 @@ if __name__ == "__main__":
     
     log(f"Ambiente: {'GITHUB' if is_github else 'LOCAL'} | Data: HOJE")
     
-    # Extrai (retorna arquivo E a data usada)
     resultado = extract_snd(headless=headless, use_system_chrome=use_system)
     
     if resultado:
