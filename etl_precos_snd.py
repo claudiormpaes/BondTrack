@@ -24,36 +24,46 @@ def log(msg):
     print(f"[ETL PREÇOS] {msg}")
     sys.stdout.flush()
 
-def get_d_minus_1():
+def get_data_target():
+    """
+    Retorna a data alvo para busca.
+    AJUSTADO: Busca o dia de HOJE (D0) se for dia útil.
+    Se for fim de semana, busca a Sexta-feira anterior.
+    """
     hoje = datetime.now()
-    if hoje.weekday() == 0: d1 = hoje - timedelta(days=3)
-    elif hoje.weekday() == 6: d1 = hoje - timedelta(days=2)
-    else: d1 = hoje - timedelta(days=1)
-    return d1
+    
+    # Se for Sábado (5), volta 1 dia -> Sexta
+    if hoje.weekday() == 5: 
+        return hoje - timedelta(days=1)
+    # Se for Domingo (6), volta 2 dias -> Sexta
+    elif hoje.weekday() == 6: 
+        return hoje - timedelta(days=2)
+    
+    # Se for Seg-Sex, retorna HOJE
+    return hoje
 
 def extract_snd(data_alvo=None, headless=True, use_system_chrome=True):
     log("🚀 Iniciando Extração (Web Scraping)...")
     
-    d1_obj = data_alvo if data_alvo else get_d_minus_1()
-    data_br = d1_obj.strftime('%d/%m/%Y')
-    data_link = d1_obj.strftime('%Y%m%d')
+    # Usa a nova lógica de data (Hoje)
+    d_obj = data_alvo if data_alvo else get_data_target()
     
-    log(f"📅 Data alvo: {data_br}")
+    data_br = d_obj.strftime('%d/%m/%Y')
+    data_link = d_obj.strftime('%Y%m%d')
+    
+    log(f"📅 Data alvo definida para: {data_br}")
     arquivo_baixado = None
 
     with sync_playwright() as p:
         browser = None
         launch_args = {"headless": headless, "args": ["--ignore-certificate-errors"]}
         
-        # Tenta Chrome do Sistema (se permitido)
         if use_system_chrome:
             try:
                 browser = p.chromium.launch(channel="chrome", **launch_args)
                 log("✅ Usando Chrome do Sistema.")
-            except:
-                pass
+            except: pass
         
-        # Fallback para Chromium
         if browser is None:
             try:
                 browser = p.chromium.launch(**launch_args)
@@ -66,12 +76,12 @@ def extract_snd(data_alvo=None, headless=True, use_system_chrome=True):
         page = context.new_page()
 
         try:
-            # Acessa para pegar cookie
+            # Acessa home para cookie
             page.goto(URL_FORM, timeout=60000)
             
-            # Download Direto
+            # Link Direto
             link = f"{URL_BASE_DOWNLOAD}?op_exc=False&emissor=&isin=&ativo=&dt_ini={data_link}&dt_fim={data_link}"
-            log(f"🔗 Baixando: {link}")
+            log(f"🔗 Baixando dados de: {data_br}")
             
             with page.expect_download(timeout=60000) as download_info:
                 try: page.goto(link)
@@ -81,23 +91,23 @@ def extract_snd(data_alvo=None, headless=True, use_system_chrome=True):
             fname = f"snd_precos_{data_link}.xls"
             caminho = os.path.join(DOWNLOAD_DIR, fname)
             download.save_as(caminho)
-            log(f"✅ Arquivo salvo em: {caminho}")
+            log(f"✅ Arquivo salvo: {fname}")
             arquivo_baixado = caminho
 
         except Exception as e:
-            log(f"❌ Erro no download: {e}")
+            log(f"❌ Erro no download ou arquivo não disponível para hoje ({data_br}): {e}")
         finally:
             browser.close()
             
-    return arquivo_baixado
+    return arquivo_baixado, d_obj # Retorna também o objeto data para uso no dataframe
 
-def transform_data(file_path):
+def transform_data(file_path, data_ref_obj):
     if not file_path or not os.path.exists(file_path): return None
     log("⚙️ Processando arquivo...")
     
     df = None
     
-    # 1. Tenta ler como HTML
+    # 1. Tenta ler HTML
     try:
         with open(file_path, 'rb') as f:
             content = f.read().decode('latin-1', errors='ignore')
@@ -105,30 +115,24 @@ def transform_data(file_path):
         for d in dfs:
             if any(c in str(d.columns) for c in ['Código', 'Emissor', 'Preço']):
                 df = d
-                log("   -> Formato HTML detectado.")
                 break
     except: pass
 
-    # 2. Tenta ler como TXT
+    # 2. Tenta ler TXT
     if df is None:
         try:
             df = pd.read_csv(file_path, sep='\t', encoding='latin-1', on_bad_lines='skip')
-            # Busca cabeçalho dinâmico
             cols_chave = ['Código', 'Emissor', 'PU Médio']
             if not any(k in str(df.columns) for k in cols_chave):
-                log("   -> Procurando cabeçalho nas linhas...")
                 for i in range(1, 20):
                     df_temp = pd.read_csv(file_path, sep='\t', encoding='latin-1', skiprows=i, on_bad_lines='skip')
                     if any(k in str(df_temp.columns) for k in cols_chave):
                         df = df_temp
-                        log(f"   -> Cabeçalho achado na linha {i}")
                         break
-        except Exception as e:
-            log(f"❌ Erro ao ler arquivo: {e}")
-            return None
+        except: pass
 
     if df is None or df.empty:
-        log("⚠️ Arquivo vazio ou ilegível.")
+        log("⚠️ Arquivo vazio ou ilegível (Talvez o mercado não tenha fechado ainda).")
         return None
 
     # Normalização
@@ -153,7 +157,6 @@ def transform_data(file_path):
     df = df[df['codigo'].notna()]
     df = df[~df['codigo'].astype(str).str.contains('Código', case=False)]
 
-    # Limpeza Numérica
     for col in ['pu_medio', 'quantidade', 'pu_minimo', 'pu_maximo', 'numero_negocios']:
         if col in df.columns:
             df[col] = df[col].astype(str).str.replace('R$', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
@@ -161,18 +164,18 @@ def transform_data(file_path):
         else:
             df[col] = 0
 
-    df['data_base'] = get_d_minus_1().strftime('%Y-%m-%d')
+    # Usa a data passada como parâmetro (DATA DO ARQUIVO)
+    df['data_base'] = data_ref_obj.strftime('%Y-%m-%d')
     df['volume_total'] = df['pu_medio'] * df['quantidade']
     df['data_atualizacao'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
-    # Padroniza Código
     df['codigo'] = df['codigo'].astype(str).str.strip().str.upper()
     
     cols_finais = ['data_base', 'codigo', 'emissor', 'pu_minimo', 'pu_medio', 'pu_maximo', 'quantidade', 'numero_negocios', 'volume_total', 'data_atualizacao']
     for c in cols_finais: 
         if c not in df.columns: df[c] = None
             
-    log(f"📊 {len(df)} linhas processadas com sucesso.")
+    log(f"📊 {len(df)} linhas processadas para a data {df['data_base'].iloc[0]}.")
     return df[cols_finais]
 
 def load_data(df):
@@ -204,18 +207,19 @@ def load_data(df):
         log(f"❌ Erro de Banco: {e}")
 
 if __name__ == "__main__":
-    # CONFIGURAÇÃO AUTOMÁTICA GITHUB VS LOCAL
     is_github = os.getenv('GITHUB_ACTIONS') == 'true'
-    
-    # Se for GitHub: Roda escondido (Headless) e NÃO usa Chrome do Sistema
     headless = True if is_github else False
     use_system = False if is_github else True
     
-    log(f"Ambiente: {'GITHUB' if is_github else 'LOCAL'} | Headless: {headless}")
+    log(f"Ambiente: {'GITHUB' if is_github else 'LOCAL'} | Data: HOJE")
     
-    arquivo = extract_snd(headless=headless, use_system_chrome=use_system)
-    if arquivo:
-        df = transform_data(arquivo)
-        load_data(df)
-        try: os.remove(arquivo)
-        except: pass
+    # Extrai (retorna arquivo E a data usada)
+    resultado = extract_snd(headless=headless, use_system_chrome=use_system)
+    
+    if resultado:
+        arquivo, data_usada = resultado
+        if arquivo:
+            df = transform_data(arquivo, data_usada)
+            load_data(df)
+            try: os.remove(arquivo)
+            except: pass
