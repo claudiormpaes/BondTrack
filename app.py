@@ -139,6 +139,40 @@ with st.sidebar:
     
     st.divider()
     
+    # Status dos Bancos de Dados (Checkbox visual)
+    st.markdown("### 📊 Status dos Dados")
+    
+    try:
+        db_status = engine.get_database_status(data_ref if data_ref else None)
+        
+        # SND Cadastro
+        if db_status['snd_cadastro']['loaded']:
+            st.markdown(f"✅ **SND Cadastro** ({db_status['snd_cadastro']['count']:,} ativos)")
+        else:
+            st.markdown("⬜ **SND Cadastro** (não carregado)")
+        
+        # SND Negociação
+        if db_status['snd_negociacao']['loaded'] and db_status['snd_negociacao']['count'] > 0:
+            st.markdown(f"✅ **SND Negociação** ({db_status['snd_negociacao']['count']:,} registros)")
+        else:
+            st.markdown("⬜ **SND Negociação** (sem dados)")
+        
+        # ANBIMA Preços
+        if db_status['anbima_precos']['loaded'] and db_status['anbima_precos']['count'] > 0:
+            st.markdown(f"✅ **ANBIMA Preços** ({db_status['anbima_precos']['count']:,} registros)")
+        else:
+            st.markdown("⬜ **ANBIMA Preços** (sem dados)")
+        
+        # ANBIMA Curvas
+        if db_status['anbima_curvas']['loaded'] and db_status['anbima_curvas']['count'] > 0:
+            st.markdown(f"✅ **ANBIMA Curvas** ({db_status['anbima_curvas']['count']:,} pontos)")
+        else:
+            st.markdown("⬜ **ANBIMA Curvas** (sem dados)")
+    except:
+        st.info("Status indisponível")
+    
+    st.divider()
+    
     # Informações do Sistema
     st.markdown("### Sobre")
     st.info("""
@@ -435,6 +469,100 @@ if data_ref:
                 hide_index=True,
                 use_container_width=True
             )
+    
+    # ===== MÉTRICAS POR CATEGORIA =====
+    st.markdown("### Métricas por Categoria")
+    
+    try:
+        metrics_cat = engine.get_metrics_by_category(df)
+        
+        if metrics_cat:
+            # Criar colunas para cada categoria
+            cols_cat = st.columns(len(metrics_cat))
+            
+            for idx, (cat, data) in enumerate(metrics_cat.items()):
+                with cols_cat[idx]:
+                    # Card da categoria
+                    cat_display = cat.replace('Incentivado', 'Incent.').replace('Não Incentivado', 'Não Incent.')
+                    st.markdown(f"**{cat_display}**")
+                    st.metric("Quantidade", f"{data['quantidade']:,}")
+                    st.metric("Taxa Média", f"{data['taxa_media']:.2f}%")
+                    st.metric("Duration", f"{data['duration_media']:.2f} anos")
+                    if data['spread_medio'] is not None:
+                        st.metric("Spread", f"{data['spread_medio']:.0f} bps")
+        else:
+            st.info("Dados de categoria não disponíveis.")
+    except Exception as e:
+        st.warning(f"Erro ao calcular métricas por categoria: {e}")
+    
+    st.divider()
+    
+    # ===== ANÁLISE DE CONSOLIDAÇÃO =====
+    st.markdown("### Análise de Consolidação")
+    
+    try:
+        consol_stats = engine.get_consolidation_stats(df)
+        
+        if consol_stats:
+            col_c1, col_c2, col_c3, col_c4 = st.columns(4)
+            
+            with col_c1:
+                st.metric(
+                    "SND + ANBIMA", 
+                    f"{consol_stats['consolidado']:,}",
+                    f"{consol_stats['consolidado_pct']:.1f}%"
+                )
+            with col_c2:
+                st.metric(
+                    "Somente SND", 
+                    f"{consol_stats['snd_only']:,}",
+                    f"{consol_stats['snd_only_pct']:.1f}%"
+                )
+            with col_c3:
+                st.metric(
+                    "Somente ANBIMA", 
+                    f"{consol_stats['anbima_only']:,}",
+                    f"{consol_stats['anbima_only_pct']:.1f}%"
+                )
+            with col_c4:
+                st.metric(
+                    "Somente Cadastro", 
+                    f"{consol_stats['cadastro_only']:,}",
+                    f"{consol_stats['cadastro_only_pct']:.1f}%"
+                )
+            
+            # Gráfico de pizza de consolidação
+            import plotly.graph_objects as go
+            
+            labels = ['SND + ANBIMA', 'Somente SND', 'Somente ANBIMA', 'Cadastro']
+            values = [consol_stats['consolidado'], consol_stats['snd_only'], 
+                     consol_stats['anbima_only'], consol_stats['cadastro_only']]
+            colors = ['#00CC96', '#636EFA', '#EF553B', '#AB63FA']
+            
+            # Remove valores zero
+            data_pie = [(l, v, c) for l, v, c in zip(labels, values, colors) if v > 0]
+            if data_pie:
+                labels_f, values_f, colors_f = zip(*data_pie)
+                
+                fig_consol = go.Figure(data=[go.Pie(
+                    labels=labels_f, 
+                    values=values_f,
+                    hole=0.4,
+                    marker_colors=colors_f
+                )])
+                fig_consol.update_layout(
+                    template='plotly_dark',
+                    paper_bgcolor='#0e1117',
+                    plot_bgcolor='#0e1117',
+                    height=300,
+                    showlegend=True,
+                    legend=dict(orientation='h', y=-0.1)
+                )
+                st.plotly_chart(fig_consol, use_container_width=True)
+    except Exception as e:
+        st.warning(f"Erro ao calcular estatísticas de consolidação: {e}")
+    
+    st.divider()
     
     # ===== INFO CURVA ANBIMA =====
     if curva_disponivel:
