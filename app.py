@@ -125,20 +125,6 @@ with st.sidebar:
     
     st.divider()
     
-    # Navegação
-    st.markdown("### Navegação")
-    st.page_link("app.py", label="Home", icon="🏠")
-    if os.path.exists("pages/1_Radar_Mercado.py"):
-        st.page_link("pages/1_Radar_Mercado.py", label="Radar de Mercado", icon="📡")
-    if os.path.exists("pages/2_Screener_Pro.py"):
-        st.page_link("pages/2_Screener_Pro.py", label="Screener Pro", icon="🔍")
-    if os.path.exists("pages/3_Analise_Ativo.py"):
-        st.page_link("pages/3_Analise_Ativo.py", label="Análise de Ativo", icon="📈")
-    if os.path.exists("pages/4_Auditoria.py"):
-        st.page_link("pages/4_Auditoria.py", label="Auditoria de Dados", icon="🔎")
-    
-    st.divider()
-    
     # Status dos Bancos de Dados (Checkbox visual)
     st.markdown("### 📊 Status dos Dados")
     
