@@ -317,7 +317,12 @@ def get_data_quality_report(df):
         if c in df.columns:
             valid = df[c].notna().sum()
             if c in ['taxa', 'volume']: valid = (df[c] > 0).sum()
-            report["campos_completos"][c] = {"validos": int(valid), "percentual": round(valid/len(df)*100, 1) if len(df)>0 else 0}
+            invalid = len(df) - valid
+            report["campos_completos"][c] = {
+                "validos": int(valid), 
+                "invalidos": int(invalid),
+                "percentual": round(valid/len(df)*100, 1) if len(df)>0 else 0
+            }
             
     if 'codigo' in df.columns:
         report["duplicatas"] = int(df.duplicated(subset=['codigo']).sum())
@@ -390,3 +395,140 @@ def get_curvas_anbima_dates():
         conn.close()
         return sorted(df['data_referencia'].tolist(), reverse=True)
     except: return []
+
+def get_database_status(data_ref=None):
+    """
+    Verifica o status dos bancos de dados e tabelas carregadas.
+    Retorna dict com informações sobre cada fonte de dados.
+    """
+    status = {
+        'snd_cadastro': {'loaded': False, 'count': 0},
+        'snd_negociacao': {'loaded': False, 'count': 0},
+        'anbima_precos': {'loaded': False, 'count': 0},
+        'anbima_curvas': {'loaded': False, 'count': 0}
+    }
+    
+    # Verifica banco principal
+    if os.path.exists(DB_DEBENTURES):
+        try:
+            conn = sqlite3.connect(DB_DEBENTURES)
+            
+            # Cadastro SND
+            try:
+                df = pd.read_sql("SELECT COUNT(*) as c FROM cadastro_snd", conn)
+                status['snd_cadastro']['loaded'] = True
+                status['snd_cadastro']['count'] = int(df.iloc[0]['c'])
+            except: pass
+            
+            # Negociação SND (por data se especificada)
+            try:
+                if data_ref:
+                    try:
+                        dt_obj = datetime.strptime(data_ref, "%d/%m/%Y")
+                        date_iso = dt_obj.strftime("%Y-%m-%d")
+                    except:
+                        date_iso = data_ref
+                    df = pd.read_sql(f"SELECT COUNT(*) as c FROM negociacao_snd WHERE data_base = '{date_iso}'", conn)
+                else:
+                    df = pd.read_sql("SELECT COUNT(*) as c FROM negociacao_snd", conn)
+                status['snd_negociacao']['loaded'] = True
+                status['snd_negociacao']['count'] = int(df.iloc[0]['c'])
+            except: pass
+            
+            # ANBIMA Preços (por data se especificada)
+            try:
+                if data_ref:
+                    df = pd.read_sql(f"SELECT COUNT(*) as c FROM mercado_secundario WHERE data_referencia = '{data_ref}'", conn)
+                    # Tenta ISO se não encontrou
+                    if df.iloc[0]['c'] == 0:
+                        try:
+                            dt_obj = datetime.strptime(data_ref, "%d/%m/%Y")
+                            date_iso = dt_obj.strftime("%Y-%m-%d")
+                            df = pd.read_sql(f"SELECT COUNT(*) as c FROM mercado_secundario WHERE data_referencia = '{date_iso}'", conn)
+                        except: pass
+                else:
+                    df = pd.read_sql("SELECT COUNT(*) as c FROM mercado_secundario", conn)
+                status['anbima_precos']['loaded'] = True
+                status['anbima_precos']['count'] = int(df.iloc[0]['c'])
+            except: pass
+            
+            conn.close()
+        except: pass
+    
+    # Verifica banco de curvas
+    if os.path.exists(DB_CURVAS):
+        try:
+            conn = sqlite3.connect(DB_CURVAS)
+            df = pd.read_sql("SELECT COUNT(*) as c FROM curvas_anbima", conn)
+            status['anbima_curvas']['loaded'] = True
+            status['anbima_curvas']['count'] = int(df.iloc[0]['c'])
+            conn.close()
+        except: pass
+    
+    return status
+
+def get_metrics_by_category(df):
+    """
+    Calcula métricas separadas por categoria.
+    Retorna dict com taxa média e duration média para cada categoria.
+    """
+    if df.empty or 'categoria_grafico' not in df.columns:
+        return {}
+    
+    categorias = ['IPCA Incentivado', 'IPCA Não Incentivado', 'CDI +', '% CDI', 'Prefixado']
+    metrics = {}
+    
+    for cat in categorias:
+        df_cat = df[df['categoria_grafico'] == cat]
+        if df_cat.empty:
+            continue
+            
+        taxa_media = 0
+        duration_media = 0
+        spread_medio = None
+        
+        if 'taxa' in df_cat.columns:
+            df_taxa = df_cat[df_cat['taxa'] > 0]
+            if not df_taxa.empty:
+                taxa_media = df_taxa['taxa'].mean()
+        
+        if 'duration' in df_cat.columns:
+            df_dur = df_cat[df_cat['duration'] > 0]
+            if not df_dur.empty:
+                duration_media = df_dur['duration'].mean()
+        
+        if 'spread_bps' in df_cat.columns:
+            df_spread = df_cat[df_cat['spread_bps'].notna()]
+            if not df_spread.empty:
+                spread_medio = df_spread['spread_bps'].mean()
+        
+        metrics[cat] = {
+            'quantidade': len(df_cat),
+            'taxa_media': taxa_media,
+            'duration_media': duration_media,
+            'spread_medio': spread_medio
+        }
+    
+    return metrics
+
+def get_consolidation_stats(df):
+    """
+    Retorna estatísticas de consolidação de dados.
+    """
+    if df.empty or 'FONTE' not in df.columns:
+        return None
+    
+    total = len(df)
+    stats = {
+        'total': total,
+        'snd_only': len(df[df['FONTE'] == 'SND']),
+        'anbima_only': len(df[df['FONTE'] == 'Anbima']),
+        'consolidado': len(df[df['FONTE'] == 'SND + Anbima']),
+        'cadastro_only': len(df[df['FONTE'] == 'Cadastro'])
+    }
+    
+    # Calcula percentuais
+    for key in ['snd_only', 'anbima_only', 'consolidado', 'cadastro_only']:
+        stats[f'{key}_pct'] = (stats[key] / total * 100) if total > 0 else 0
+    
+    return stats
