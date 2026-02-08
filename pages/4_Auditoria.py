@@ -327,8 +327,61 @@ else:
 
 st.divider()
 
-# ===== EXPORT DE RELATÓRIO =====
-st.markdown("### 💾 Exportar Relatório")
+# ===== EXPORT DE DADOS CSV =====
+st.markdown("### 💾 Exportar Dados")
+
+col_exp1, col_exp2 = st.columns([1, 2])
+
+with col_exp1:
+    opcao_export = st.selectbox(
+        "Escopo do Export",
+        ["Dados da data selecionada", "Todos os dados disponíveis"],
+        help="Escolha se quer exportar só a data atual ou todo o histórico"
+    )
+
+with col_exp2:
+    if opcao_export == "Todos os dados disponíveis":
+        st.info("Será exportado todo o banco de dados consolidado")
+        df_export = df_full.copy()
+        filename_base = "bondtrack_completo"
+    else:
+        df_export = df_full.copy()
+        filename_base = f"bondtrack_{data_ref.replace('/', '')}"
+
+# Selecionar colunas para export
+colunas_disponiveis = df_export.columns.tolist()
+colunas_principais = ['codigo', 'emissor', 'indexador', 'taxa', 'duration', 'pu', 
+                     'vencimento', 'emissao', 'volume', 'FONTE', 'categoria_grafico', 
+                     'data_referencia', 'spread_bps']
+colunas_default = [c for c in colunas_principais if c in colunas_disponiveis]
+
+colunas_selecionadas = st.multiselect(
+    "Colunas a exportar",
+    colunas_disponiveis,
+    default=colunas_default,
+    help="Selecione as colunas que deseja incluir no CSV"
+)
+
+if colunas_selecionadas:
+    df_csv = df_export[colunas_selecionadas]
+    csv_data = df_csv.to_csv(index=False, encoding='utf-8-sig')
+    
+    st.download_button(
+        label="📥 Download CSV",
+        data=csv_data,
+        file_name=f"{filename_base}.csv",
+        mime='text/csv',
+        help=f"Exportar {len(df_csv):,} registros"
+    )
+    
+    st.caption(f"📊 {len(df_csv):,} registros • {len(colunas_selecionadas)} colunas")
+else:
+    st.warning("Selecione ao menos uma coluna para exportar")
+
+st.divider()
+
+# ===== EXPORT DE RELATÓRIO JSON =====
+st.markdown("### 📋 Relatório de Qualidade (JSON)")
 
 if st.button("📊 Gerar Relatório Completo (JSON)"):
     import json
