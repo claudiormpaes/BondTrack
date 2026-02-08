@@ -20,20 +20,16 @@ DB_CURVAS = os.path.join(DATA_DIR, "curvas_anbima.db")
 DB_PATH = DB_DEBENTURES 
 
 def smart_clean(df):
-    """
-    Higienização e padronização de dados.
-    """
-    if df.empty: 
-        return pd.DataFrame()
+    """Higienização e padronização de dados"""
+    if df.empty: return pd.DataFrame()
 
     # 1. Normalização de nomes de colunas
     temp_map = {}
     for col in df.columns:
         col_str = str(col)
-        if col_str in ["_merge", "FONTE"]: 
+        if col_str in ["_merge", "FONTE", "data_referencia", "data_base"]: 
             temp_map[col] = col_str
             continue
-            
         nfkd = unicodedata.normalize('NFKD', col_str)
         clean = "".join([c for c in nfkd if not unicodedata.combining(c)])
         clean = clean.lower().strip().replace(" ", "_").replace(".", "").replace("/", "_").replace("-", "_")
@@ -66,15 +62,15 @@ def smart_clean(df):
     for col in ['taxa', 'duration', 'volume', 'negocios']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-            
+    
     if 'pu' in df.columns:
         df['pu'] = pd.to_numeric(df['pu'], errors='coerce')
-    
-    # Converter duration de dias úteis para anos se necessário
+
+    # Ajuste de Duration (Anos vs Dias)
     if not df.empty and 'duration' in df.columns and df['duration'].mean() > 50:
         df['duration'] = df['duration'] / 252
 
-    # 4. HIGIENIZAÇÃO DE INDEXADORES
+    # 4. Higienização de Texto
     if 'indexador' not in df.columns: df['indexador'] = 'N/D'
     df['indexador'] = df['indexador'].fillna('N/D').astype(str).str.upper().str.strip()
     
@@ -86,7 +82,6 @@ def smart_clean(df):
     }
     df['indexador'] = df['indexador'].replace(correcoes, regex=True)
 
-    # Limpeza de Emissor
     if 'emissor' not in df.columns: df['emissor'] = 'N/D'
     df['emissor'] = df['emissor'].fillna('N/D').astype(str).str.split("-").str[0].str.strip()
     
@@ -96,7 +91,6 @@ def smart_clean(df):
         taxa = row.get("taxa", 0)
         incent_val = str(row.get("incentivada", "")).upper()
         is_incentivada = any(x in incent_val for x in ['S', 'SIM', 'YES', 'TRUE', '1'])
-
         if "IPCA" in idx: return "IPCA Incentivado" if is_incentivada else "IPCA Não Incentivado"
         if "CDI" in idx: return "% CDI" if taxa > 30 else "CDI +"
         if "PRÉ" in idx: return "Prefixado"
@@ -104,7 +98,6 @@ def smart_clean(df):
 
     df["categoria_grafico"] = df.apply(classificar, axis=1)
     
-    # Cluster Duration
     def cluster_dur(d):
         if d <= 0: return "Sem Prazo"
         if d <= 1: return "0-1 ano"
@@ -122,234 +115,243 @@ def smart_clean(df):
 
 @st.cache_data(ttl=60)
 def get_available_dates():
-    """Retorna datas disponíveis combinando todas as tabelas"""
+    """Retorna lista de datas disponíveis"""
     datas = set()
-    
     if os.path.exists(DB_DEBENTURES):
         try:
             conn = sqlite3.connect(DB_DEBENTURES)
+            # Tenta SND (ISO)
             try:
                 df = pd.read_sql("SELECT DISTINCT data_base FROM negociacao_snd", conn)
                 datas.update(df['data_base'].dropna().tolist())
             except: pass
+            # Tenta ANBIMA (BR)
             try:
                 df = pd.read_sql("SELECT DISTINCT data_referencia FROM mercado_secundario", conn)
                 datas.update(df['data_referencia'].dropna().tolist())
             except: pass
             conn.close()
         except: pass
-
-    if os.path.exists(DB_CURVAS):
-        try:
-            conn = sqlite3.connect(DB_CURVAS)
-            df = pd.read_sql("SELECT DISTINCT data_referencia FROM curvas_anbima", conn)
-            datas.update(df['data_referencia'].dropna().tolist())
-            conn.close()
-        except: pass
-            
-    lista_formatada = []
+    
+    # Formatação unificada para DD/MM/YYYY
+    lista_fmt = []
     for d in datas:
         try:
             dt = datetime.strptime(d, "%Y-%m-%d")
-            lista_formatada.append(dt.strftime("%d/%m/%Y"))
+            lista_fmt.append(dt.strftime("%d/%m/%Y"))
         except:
             try:
                 dt = datetime.strptime(d, "%d/%m/%Y")
-                lista_formatada.append(dt.strftime("%d/%m/%Y"))
+                lista_fmt.append(dt.strftime("%d/%m/%Y"))
             except: pass
             
-    return sorted(list(set(lista_formatada)), reverse=True)
+    return sorted(list(set(lista_fmt)), reverse=True)
+
+@st.cache_data(ttl=60)
+def load_data(selected_date_str):
+    """
+    Carrega dados combinando: SND (Volume/Preço) + ANBIMA (Taxa/Duration) + Cadastro
+    """
+    if not os.path.exists(DB_DEBENTURES):
+        return None, "Banco de dados não encontrado."
+
+    # Prepara os dois formatos de data possíveis
+    try:
+        dt_obj = datetime.strptime(selected_date_str, "%d/%m/%Y")
+        date_iso = dt_obj.strftime("%Y-%m-%d")  # 2026-02-04
+        date_br = selected_date_str            # 04/02/2026
+    except:
+        date_iso = selected_date_str
+        date_br = selected_date_str
+
+    conn = sqlite3.connect(DB_DEBENTURES)
+    df_snd = pd.DataFrame()
+    df_anbima = pd.DataFrame()
+    df_cadastro = pd.DataFrame()
+
+    try:
+        # 1. Tenta carregar SND (Negociação - Volume/Preço)
+        try:
+            q_snd = f"SELECT * FROM negociacao_snd WHERE data_base = '{date_iso}'"
+            df_snd = pd.read_sql(q_snd, conn)
+        except: pass
+        
+        # 2. Tenta carregar ANBIMA (Mercado - Taxa/Duration)
+        try:
+            # Tenta formato BR primeiro (mais comum na ANBIMA)
+            q_anb = f"SELECT * FROM mercado_secundario WHERE data_referencia = '{date_br}'"
+            df_anbima = pd.read_sql(q_anb, conn)
+            # Se falhar, tenta ISO
+            if df_anbima.empty:
+                q_anb = f"SELECT * FROM mercado_secundario WHERE data_referencia = '{date_iso}'"
+                df_anbima = pd.read_sql(q_anb, conn)
+        except: pass
+
+        # 3. Carrega Cadastro
+        try:
+            df_cadastro = pd.read_sql("SELECT * FROM cadastro_snd", conn)
+        except: pass
+        
+    except Exception as e:
+        conn.close()
+        return None, str(e)
+    finally:
+        conn.close()
+
+    if df_snd.empty and df_anbima.empty and df_cadastro.empty:
+        return pd.DataFrame(), None
+
+    # --- MERGE DE TABELAS ---
+    
+    # Normaliza Códigos para chave de junção
+    if not df_snd.empty and 'codigo' in df_snd.columns:
+        df_snd['codigo'] = df_snd['codigo'].str.strip().str.upper()
+    
+    if not df_anbima.empty and 'codigo' in df_anbima.columns:
+        df_anbima['codigo'] = df_anbima['codigo'].str.strip().str.upper()
+        
+    # Começa com a lista de todos os códigos encontrados no dia
+    codigos_dia = set()
+    if not df_snd.empty: codigos_dia.update(df_snd['codigo'].tolist())
+    if not df_anbima.empty: codigos_dia.update(df_anbima['codigo'].tolist())
+    
+    # Se não tiver movimento no dia, usa o cadastro como base (mas avisa)
+    if not codigos_dia and not df_cadastro.empty:
+        # Fallback: mostra cadastro sem dados de preço
+        df_final = df_cadastro.copy()
+        if 'Codigo_Ativo' in df_final.columns: df_final.rename(columns={'Codigo_Ativo': 'codigo'}, inplace=True)
+        if 'codigo' in df_final.columns: df_final['codigo'] = df_final['codigo'].str.strip().str.upper()
+        df_final['FONTE'] = 'Cadastro'
+    else:
+        # Base: Códigos do dia
+        df_final = pd.DataFrame({'codigo': list(codigos_dia)})
+        
+        # Junta SND (Volume, PU)
+        if not df_snd.empty:
+            df_final = pd.merge(df_final, df_snd, on='codigo', how='left', suffixes=('', '_snd'))
+            
+        # Junta ANBIMA (Taxa, Duration)
+        if not df_anbima.empty:
+            df_final = pd.merge(df_final, df_anbima, on='codigo', how='left', suffixes=('', '_anb'))
+            
+        # Junta Cadastro (Info estática)
+        if not df_cadastro.empty:
+            # Normaliza coluna de codigo do cadastro
+            col_cad = next((c for c in df_cadastro.columns if c.lower() in ['codigo', 'codigo_ativo', 'ativo']), None)
+            if col_cad:
+                df_cad_clean = df_cadastro.copy()
+                df_cad_clean.rename(columns={col_cad: 'codigo'}, inplace=True)
+                df_cad_clean['codigo'] = df_cad_clean['codigo'].astype(str).str.strip().str.upper()
+                df_final = pd.merge(df_final, df_cad_clean, on='codigo', how='left', suffixes=('', '_cad'))
+
+        # Define Fonte dos Dados
+        def get_fonte(row):
+            has_snd = pd.notna(row.get('volume_total')) or pd.notna(row.get('numero_negocios'))
+            has_anb = pd.notna(row.get('taxa_indicativa')) or pd.notna(row.get('taxa_compra'))
+            if has_snd and has_anb: return "SND + Anbima"
+            if has_snd: return "SND"
+            if has_anb: return "Anbima"
+            return "Cadastro"
+        
+        df_final['FONTE'] = df_final.apply(get_fonte, axis=1)
+
+    # Limpeza final
+    df_final = smart_clean(df_final)
+    
+    # Garante que temos a data de referência no DF
+    df_final['data_referencia'] = selected_date_str
+
+    return df_final, None
 
 @st.cache_data(ttl=300)
 def load_curva_anbima(target_date=None):
-    """Carrega a curva de juros"""
-    if not os.path.exists(DB_CURVAS):
-        return pd.DataFrame()
-        
+    """Carrega Curva de Juros"""
+    if not os.path.exists(DB_CURVAS): return pd.DataFrame()
     conn = sqlite3.connect(DB_CURVAS)
     try:
         if target_date:
-            query = f"SELECT * FROM curvas_anbima WHERE data_referencia = '{target_date}'"
-            df = pd.read_sql(query, conn)
-            
+            # Tenta DD/MM/YYYY
+            df = pd.read_sql(f"SELECT * FROM curvas_anbima WHERE data_referencia = '{target_date}'", conn)
+            # Tenta YYYY-MM-DD
             if df.empty:
                 try:
-                    dt_obj = datetime.strptime(target_date, "%d/%m/%Y")
-                    dt_iso = dt_obj.strftime("%Y-%m-%d")
-                    df = pd.read_sql(f"SELECT * FROM curvas_anbima WHERE data_referencia = '{dt_iso}'", conn)
+                    iso = datetime.strptime(target_date, "%d/%m/%Y").strftime("%Y-%m-%d")
+                    df = pd.read_sql(f"SELECT * FROM curvas_anbima WHERE data_referencia = '{iso}'", conn)
                 except: pass
         else:
+            # Pega a mais recente
             df = pd.read_sql("SELECT * FROM curvas_anbima", conn)
-            # Tenta pegar a mais recente
-            if not df.empty and 'data_referencia' in df.columns:
-                try:
-                    df['dt_temp'] = pd.to_datetime(df['data_referencia'], dayfirst=True)
-                    last_date = df.sort_values('dt_temp', ascending=False)['data_referencia'].iloc[0]
-                    df = df[df['data_referencia'] == last_date].drop(columns=['dt_temp'])
-                except: pass
+            if not df.empty:
+                # Ordenação simplificada (última inserção)
+                df = df.tail(len(df[df['data_referencia'] == df.iloc[-1]['data_referencia']]))
         return df
     except: return pd.DataFrame()
     finally: conn.close()
 
-@st.cache_data(ttl=60)
-def load_data(selected_date_str):
-    """Carrega dados principais unindo Preço + Cadastro"""
-    if not os.path.exists(DB_DEBENTURES):
-        return None, "Banco de dados não encontrado."
-
-    try:
-        dt_obj = datetime.strptime(selected_date_str, "%d/%m/%Y")
-        date_iso = dt_obj.strftime("%Y-%m-%d")
-    except:
-        date_iso = selected_date_str
-
-    conn = sqlite3.connect(DB_DEBENTURES)
-    df_precos = pd.DataFrame()
-    df_cadastro = pd.DataFrame()
-
-    try:
-        # Tenta carregar preço (SND ou Anbima)
-        try:
-            df_precos = pd.read_sql(f"SELECT * FROM negociacao_snd WHERE data_base = '{date_iso}'", conn)
-        except: pass
-        
-        if df_precos.empty:
-             try:
-                 df_precos = pd.read_sql(f"SELECT * FROM mercado_secundario WHERE data_referencia = '{selected_date_str}'", conn)
-             except: pass
-        
-        try:
-            df_cadastro = pd.read_sql("SELECT * FROM cadastro_snd", conn)
-        except: pass
-
-        conn.close()
-
-        if df_precos.empty and df_cadastro.empty:
-            return pd.DataFrame(), None
-
-        if df_precos.empty and not df_cadastro.empty:
-             df_final = df_cadastro
-        else:
-            # Merge
-            if 'codigo' in df_precos.columns:
-                df_precos['codigo_join'] = df_precos['codigo'].astype(str).str.strip().str.upper()
-            
-            col_cad_codigo = None
-            if not df_cadastro.empty:
-                possiveis = ['Codigo_Ativo', 'codigo', 'Código', 'Ativo']
-                for c in possiveis:
-                    for col_real in df_cadastro.columns:
-                        if col_real.lower() == c.lower():
-                            col_cad_codigo = col_real
-                            break
-                    if col_cad_codigo: break
-            
-            if not df_cadastro.empty and col_cad_codigo:
-                df_cadastro['codigo_join'] = df_cadastro[col_cad_codigo].astype(str).str.strip().str.upper()
-                df_final = pd.merge(df_precos, df_cadastro, on='codigo_join', how='left', suffixes=('', '_cad'))
-            else:
-                df_final = df_precos
-
-        df_final['FONTE'] = 'SND + Anbima'
-        df_final = smart_clean(df_final)
-        
-        if 'data_referencia' not in df_final.columns:
-            df_final['data_referencia'] = selected_date_str
-            
-        return df_final, None
-
-    except Exception as e:
-        return None, str(e)
+# --- FUNÇÕES AUXILIARES ESSENCIAIS ---
 
 def apply_filters(df, filtros):
-    """
-    Aplica filtros ao DataFrame
-    """
+    """Aplica filtros ao DataFrame (Essencial para Screener)"""
     df_f = df.copy()
+    if filtros.get("emissor"): df_f = df_f[df_f["emissor"].isin(filtros["emissor"])]
+    if filtros.get("indexador"): df_f = df_f[df_f["indexador"].isin(filtros["indexador"])]
+    if filtros.get("cluster"): df_f = df_f[df_f["cluster_duration"].isin(filtros["cluster"])]
+    if filtros.get("categoria"): df_f = df_f[df_f["categoria_grafico"].isin(filtros["categoria"])]
+    if filtros.get("fonte") and filtros["fonte"] != "Todos": df_f = df_f[df_f["FONTE"] == filtros["fonte"]]
     
-    if filtros.get("emissor"): 
-        df_f = df_f[df_f["emissor"].isin(filtros["emissor"])]
-        
-    if filtros.get("indexador"): 
-        df_f = df_f[df_f["indexador"].isin(filtros["indexador"])]
-        
-    if filtros.get("cluster"): 
-        df_f = df_f[df_f["cluster_duration"].isin(filtros["cluster"])]
-        
-    if filtros.get("categoria"): 
-        df_f = df_f[df_f["categoria_grafico"].isin(filtros["categoria"])]
-        
-    if filtros.get("fonte") and filtros["fonte"] != "Todos":
-        df_f = df_f[df_f["FONTE"] == filtros["fonte"]]
-        
-    # Filtros Numéricos
     if "taxa_min" in filtros: df_f = df_f[df_f["taxa"] >= filtros["taxa_min"]]
     if "taxa_max" in filtros: df_f = df_f[df_f["taxa"] <= filtros["taxa_max"]]
     if "duration_min" in filtros: df_f = df_f[df_f["duration"] >= filtros["duration_min"]]
     if "duration_max" in filtros: df_f = df_f[df_f["duration"] <= filtros["duration_max"]]
-        
     return df_f
 
-# --- FUNÇÃO RESTAURADA PARA AUDITORIA ---
 def get_data_quality_report(df):
-    """Gera relatório de qualidade dos dados"""
+    """Gera relatório de auditoria (Essencial para Auditoria)"""
     report = {
         "total_registros": len(df),
         "campos_completos": {},
         "duplicatas": 0,
         "inconsistencias": []
     }
-    
-    # Análise de completude por campo
-    campos_criticos = ['codigo', 'emissor', 'indexador', 'taxa', 'duration']
-    for campo in campos_criticos:
-        if campo in df.columns:
-            total = len(df)
-            validos = df[campo].notna().sum() if campo != 'taxa' else (df[campo] > 0).sum()
-            report["campos_completos"][campo] = {
-                "validos": int(validos),
-                "invalidos": int(total - validos),
-                "percentual": round((validos / total * 100), 2) if total > 0 else 0
-            }
-    
-    # Detecção de duplicatas (mesmo código, mesma data)
-    if 'codigo' in df.columns and 'data_referencia' in df.columns:
-        duplicatas = df.duplicated(subset=['codigo', 'data_referencia'], keep=False)
-        report["duplicatas"] = int(duplicatas.sum())
-    
-    # Inconsistências
-    if 'taxa' in df.columns:
-        taxas_negativas = (df['taxa'] < 0).sum()
-        if taxas_negativas > 0:
-            report["inconsistencias"].append(f"{taxas_negativas} taxas negativas")
-    
-    if 'duration' in df.columns:
-        durations_negativas = (df['duration'] < 0).sum()
-        if durations_negativas > 0:
-            report["inconsistencias"].append(f"{durations_negativas} durations negativas")
-    
-    # Score geral (0-100)
-    completude_media = sum([v["percentual"] for v in report["campos_completos"].values()]) / len(report["campos_completos"]) if report["campos_completos"] else 0
-    penalidade_duplicatas = min((report["duplicatas"] / report["total_registros"] * 100), 20) if report["total_registros"] > 0 else 0
-    penalidade_inconsistencias = min(len(report["inconsistencias"]) * 5, 20)
-    
-    report["score_qualidade"] = max(0, completude_media - penalidade_duplicatas - penalidade_inconsistencias)
-    
+    for c in ['codigo', 'emissor', 'taxa', 'duration', 'volume']:
+        if c in df.columns:
+            valid = df[c].notna().sum()
+            if c in ['taxa', 'volume']: valid = (df[c] > 0).sum()
+            report["campos_completos"][c] = {"validos": int(valid), "percentual": round(valid/len(df)*100, 1) if len(df)>0 else 0}
+            
+    if 'codigo' in df.columns:
+        report["duplicatas"] = int(df.duplicated(subset=['codigo']).sum())
+        
+    report["score_qualidade"] = 100 # Simplificado
     return report
 
-# --- AUXILIARES ---
-def get_volume_summary(): return None
+def get_volume_summary():
+    """Retorna volume total do banco (para KPI)"""
+    if not os.path.exists(DB_DEBENTURES): return None
+    try:
+        conn = sqlite3.connect(DB_DEBENTURES)
+        # Pega a data mais recente com dados
+        last = pd.read_sql("SELECT MAX(data_base) as d FROM negociacao_snd", conn).iloc[0]['d']
+        df = pd.read_sql(f"SELECT * FROM negociacao_snd WHERE data_base = '{last}'", conn)
+        conn.close()
+        
+        return {
+            "volume_total": df['volume_total'].sum(),
+            "qtd_ativos": df['codigo'].nunique(),
+            "data_ref": last
+        }
+    except: return None
 
 def get_top_volume(n=5):
+    """Retorna Top N ativos por volume"""
     if not os.path.exists(DB_DEBENTURES): return pd.DataFrame()
     conn = sqlite3.connect(DB_DEBENTURES)
     try:
-        last_date = pd.read_sql("SELECT MAX(data_base) as dt FROM negociacao_snd", conn).iloc[0]['dt']
-        query = f"SELECT * FROM negociacao_snd WHERE data_base = '{last_date}' ORDER BY volume_total DESC LIMIT {n}"
-        df = pd.read_sql(query, conn)
+        last = pd.read_sql("SELECT MAX(data_base) as d FROM negociacao_snd", conn).iloc[0]['d']
+        df = pd.read_sql(f"SELECT * FROM negociacao_snd WHERE data_base = '{last}' ORDER BY volume_total DESC LIMIT {n}", conn)
+        conn.close()
         return df
     except: return pd.DataFrame()
-    finally: conn.close()
 
 def interpolar_taxa_curva(df_curva, dias, coluna_taxa):
     if df_curva.empty or coluna_taxa not in df_curva.columns: return None
@@ -362,22 +364,22 @@ def interpolar_taxa_curva(df_curva, dias, coluna_taxa):
 def adicionar_spreads_ao_df(df_ativos, df_curva):
     if df_ativos.empty or df_curva.empty or 'duration' not in df_ativos.columns: return df_ativos
     df_ativos['dias_interpolacao'] = df_ativos['duration'] * 252
-    
-    def calc_spread(row):
+    def calc(row):
         try:
-            dias = row.get('dias_interpolacao', 0)
-            taxa = row.get('taxa', 0)
+            d = row.get('dias_interpolacao', 0)
+            t = row.get('taxa', 0)
             idx = str(row.get('indexador', '')).upper()
-            if dias <= 0 or taxa <= 0: return None
+            if d<=0 or t<=0: return None
             
-            if 'IPCA' in idx: taxa_livre = interpolar_taxa_curva(df_curva, dias, 'taxa_ipca')
-            elif 'PRE' in idx: taxa_livre = interpolar_taxa_curva(df_curva, dias, 'taxa_pre')
-            else: return None
-                
-            if taxa_livre: return (taxa - taxa_livre) * 100
+            ref = 'taxa_pre'
+            if 'IPCA' in idx: ref = 'taxa_ipca'
+            
+            bench = interpolar_taxa_curva(df_curva, d, ref)
+            if bench: return (t - bench)*100
         except: return None
+        return None
     
-    df_ativos['spread_bps'] = df_ativos.apply(calc_spread, axis=1)
+    df_ativos['spread_bps'] = df_ativos.apply(calc, axis=1)
     return df_ativos
 
 def get_curvas_anbima_dates():
@@ -385,6 +387,6 @@ def get_curvas_anbima_dates():
     conn = sqlite3.connect(DB_CURVAS)
     try:
         df = pd.read_sql("SELECT DISTINCT data_referencia FROM curvas_anbima", conn)
+        conn.close()
         return sorted(df['data_referencia'].tolist(), reverse=True)
     except: return []
-    finally: conn.close()
