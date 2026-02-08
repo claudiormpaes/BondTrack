@@ -1,15 +1,16 @@
 """
-Data Engine - Módulo de Acesso aos Dados
-Responsável por ler SQLite e fornecer DataFrames limpos para o App.
+Motor de Dados BondTrack - ETL, Merge SND+Anbima, Limpeza, Curvas ANBIMA
+Arquivo central de inteligência de dados.
 """
-import sqlite3
 import pandas as pd
+import numpy as np
+import sqlite3
 import os
+import unicodedata
 import streamlit as st
 from datetime import datetime
-import unicodedata
 
-# --- CONFIGURAÇÃO DE CAMINHOS (Padronizado) ---
+# --- CONFIGURAÇÃO DE CAMINHOS ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_DEBENTURES = os.path.join(DATA_DIR, "debentures_anbima.db")
@@ -19,10 +20,13 @@ DB_CURVAS = os.path.join(DATA_DIR, "curvas_anbima.db")
 DB_PATH = DB_DEBENTURES 
 
 def smart_clean(df):
-    """Higienização e padronização de dados"""
+    """
+    Higienização e padronização de dados.
+    """
     if df.empty: 
         return pd.DataFrame()
 
+    # 1. Normalização de nomes de colunas
     temp_map = {}
     for col in df.columns:
         col_str = str(col)
@@ -36,6 +40,7 @@ def smart_clean(df):
         temp_map[col] = clean
     df = df.rename(columns=temp_map)
     
+    # 2. Mapeamento de Colunas (Keywords)
     keywords = {
         "taxa": ["taxa_indicativa", "taxa_emissao", "taxa_compra", "taxa", "taxa_media"],
         "duration": ["duration", "duracao", "du"],
@@ -57,6 +62,7 @@ def smart_clean(df):
                 break
     df = df.rename(columns=final_map)
 
+    # 3. Tratamento Numérico
     for col in ['taxa', 'duration', 'volume', 'negocios']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
@@ -64,9 +70,11 @@ def smart_clean(df):
     if 'pu' in df.columns:
         df['pu'] = pd.to_numeric(df['pu'], errors='coerce')
     
+    # Converter duration de dias úteis para anos se necessário
     if not df.empty and 'duration' in df.columns and df['duration'].mean() > 50:
         df['duration'] = df['duration'] / 252
 
+    # 4. HIGIENIZAÇÃO DE INDEXADORES
     if 'indexador' not in df.columns: df['indexador'] = 'N/D'
     df['indexador'] = df['indexador'].fillna('N/D').astype(str).str.upper().str.strip()
     
@@ -78,9 +86,11 @@ def smart_clean(df):
     }
     df['indexador'] = df['indexador'].replace(correcoes, regex=True)
 
+    # Limpeza de Emissor
     if 'emissor' not in df.columns: df['emissor'] = 'N/D'
     df['emissor'] = df['emissor'].fillna('N/D').astype(str).str.split("-").str[0].str.strip()
     
+    # 5. Categorização
     def classificar(row):
         idx = row.get("indexador", "N/D")
         taxa = row.get("taxa", 0)
@@ -94,6 +104,7 @@ def smart_clean(df):
 
     df["categoria_grafico"] = df.apply(classificar, axis=1)
     
+    # Cluster Duration
     def cluster_dur(d):
         if d <= 0: return "Sem Prazo"
         if d <= 1: return "0-1 ano"
@@ -111,9 +122,10 @@ def smart_clean(df):
 
 @st.cache_data(ttl=60)
 def get_available_dates():
-    """Retorna datas disponíveis combinando tabelas"""
+    """Retorna datas disponíveis combinando todas as tabelas"""
     datas = set()
     
+    # 1. Datas de Negociação
     if os.path.exists(DB_DEBENTURES):
         try:
             conn = sqlite3.connect(DB_DEBENTURES)
@@ -128,6 +140,7 @@ def get_available_dates():
             conn.close()
         except: pass
 
+    # 2. Datas de Curvas
     if os.path.exists(DB_CURVAS):
         try:
             conn = sqlite3.connect(DB_CURVAS)
@@ -151,15 +164,11 @@ def get_available_dates():
 
 @st.cache_data(ttl=300)
 def load_curva_anbima(target_date=None):
-    """
-    Carrega a curva de juros. 
-    CORRIGIDO: Usa DB_CURVAS consistentemente.
-    """
+    """Carrega a curva de juros"""
     if not os.path.exists(DB_CURVAS):
         return pd.DataFrame()
         
     conn = sqlite3.connect(DB_CURVAS)
-    
     try:
         if target_date:
             query = f"SELECT * FROM curvas_anbima WHERE data_referencia = '{target_date}'"
@@ -173,19 +182,16 @@ def load_curva_anbima(target_date=None):
                 except: pass
         else:
             df = pd.read_sql("SELECT * FROM curvas_anbima", conn)
+            # Tenta pegar a mais recente
             if not df.empty and 'data_referencia' in df.columns:
-                # Ordena pela data (precisa converter se for texto BR)
                 try:
                     df['dt_temp'] = pd.to_datetime(df['data_referencia'], dayfirst=True)
                     last_date = df.sort_values('dt_temp', ascending=False)['data_referencia'].iloc[0]
                     df = df[df['data_referencia'] == last_date].drop(columns=['dt_temp'])
                 except: pass
-                
         return df
-    except Exception as e:
-        return pd.DataFrame()
-    finally:
-        conn.close()
+    except: return pd.DataFrame()
+    finally: conn.close()
 
 @st.cache_data(ttl=60)
 def load_data(selected_date_str):
@@ -193,6 +199,7 @@ def load_data(selected_date_str):
     if not os.path.exists(DB_DEBENTURES):
         return None, "Banco de dados não encontrado."
 
+    # Prepara data em formato ISO
     try:
         dt_obj = datetime.strptime(selected_date_str, "%d/%m/%Y")
         date_iso = dt_obj.strftime("%Y-%m-%d")
@@ -200,7 +207,6 @@ def load_data(selected_date_str):
         date_iso = selected_date_str
 
     conn = sqlite3.connect(DB_DEBENTURES)
-    
     df_precos = pd.DataFrame()
     df_cadastro = pd.DataFrame()
 
@@ -225,7 +231,6 @@ def load_data(selected_date_str):
             return pd.DataFrame(), None
 
         if df_precos.empty and not df_cadastro.empty:
-             # Se só tem cadastro (sem preço no dia), mostra o cadastro mesmo assim
              df_final = df_cadastro
         else:
             # Merge
@@ -248,18 +253,49 @@ def load_data(selected_date_str):
             else:
                 df_final = df_precos
 
-        # Limpeza
         df_final['FONTE'] = 'SND + Anbima'
         df_final = smart_clean(df_final)
         
+        if 'data_referencia' not in df_final.columns:
+            df_final['data_referencia'] = selected_date_str
+            
         return df_final, None
 
     except Exception as e:
         return None, str(e)
 
-# --- FUNÇÕES DE VOLUME (Reutilização) ---
-def get_volume_summary():
-    return None
+# --- FUNÇÃO QUE FALTAVA ---
+def apply_filters(df, filtros):
+    """
+    Aplica filtros ao DataFrame (Essencial para o Screener Pro)
+    """
+    df_f = df.copy()
+    
+    if filtros.get("emissor"): 
+        df_f = df_f[df_f["emissor"].isin(filtros["emissor"])]
+        
+    if filtros.get("indexador"): 
+        df_f = df_f[df_f["indexador"].isin(filtros["indexador"])]
+        
+    if filtros.get("cluster"): 
+        df_f = df_f[df_f["cluster_duration"].isin(filtros["cluster"])]
+        
+    if filtros.get("categoria"): 
+        df_f = df_f[df_f["categoria_grafico"].isin(filtros["categoria"])]
+        
+    if filtros.get("fonte") and filtros["fonte"] != "Todos":
+        df_f = df_f[df_f["FONTE"] == filtros["fonte"]]
+        
+    # Filtros Numéricos
+    if "taxa_min" in filtros: df_f = df_f[df_f["taxa"] >= filtros["taxa_min"]]
+    if "taxa_max" in filtros: df_f = df_f[df_f["taxa"] <= filtros["taxa_max"]]
+    if "duration_min" in filtros: df_f = df_f[df_f["duration"] >= filtros["duration_min"]]
+    if "duration_max" in filtros: df_f = df_f[df_f["duration"] <= filtros["duration_max"]]
+        
+    return df_f
+
+# --- AUXILIARES ---
+def get_volume_summary(): return None
 
 def get_top_volume(n=5):
     if not os.path.exists(DB_DEBENTURES): return pd.DataFrame()
