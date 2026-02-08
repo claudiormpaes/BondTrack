@@ -255,6 +255,44 @@ def create_pie_distribuicao(df, values_col='codigo', names_col='categoria_grafic
         return fig
     except: return go.Figure()
 
+def create_box_plot_categoria(df, x_col='categoria_grafico', y_col='taxa', title="Distribuição"):
+    """
+    Cria box plot por categoria de forma segura.
+    """
+    if df.empty:
+        return go.Figure()
+    
+    # Proteção contra colunas faltantes
+    if x_col not in df.columns or y_col not in df.columns:
+        fig = go.Figure()
+        fig.add_annotation(text="Dados insuficientes para o gráfico", showarrow=False)
+        return fig
+    
+    try:
+        # Filtra valores válidos
+        df_plot = df[[x_col, y_col]].dropna()
+        
+        if df_plot.empty:
+            return go.Figure()
+        
+        fig = px.box(
+            df_plot,
+            x=x_col,
+            y=y_col,
+            color=x_col,
+            color_discrete_map=COLOR_SCHEME,
+            title=title
+        )
+        
+        fig.update_layout(**LAYOUT_DARK, height=400, showlegend=False)
+        fig.update_traces(marker=dict(outliercolor='rgba(255,255,255,0.5)'))
+        
+        return fig
+    except Exception as e:
+        fig = go.Figure()
+        fig.add_annotation(text=f"Erro: {e}", showarrow=False)
+        return fig
+
 def apply_bondtrack_theme(fig):
     fig.update_layout(**LAYOUT_DARK)
     return fig
