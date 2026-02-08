@@ -199,7 +199,7 @@ def load_data(selected_date_str):
         conn.close()
 
     if df_snd.empty and df_anbima.empty and df_cadastro.empty:
-        return pd.DataFrame(), None
+        return pd.DataFrame(), "Nenhum dado encontrado para a data selecionada. Verifique se os ETLs foram executados."
 
     # --- MERGE DE TABELAS ---
     
@@ -367,24 +367,60 @@ def interpolar_taxa_curva(df_curva, dias, coluna_taxa):
     except: return None
 
 def adicionar_spreads_ao_df(df_ativos, df_curva):
-    if df_ativos.empty or df_curva.empty or 'duration' not in df_ativos.columns: return df_ativos
+    """
+    Adiciona spread em bps ao DataFrame.
+    IMPORTANTE: Spread é calculado apenas para:
+    - IPCA: comparado com ETTJ IPCA
+    - PRÉ: comparado com ETTJ PRÉ
+    Para CDI+ e %CDI, não calculamos spread (retorna None/N/A)
+    """
+    if df_ativos.empty or df_curva.empty or 'duration' not in df_ativos.columns: 
+        return df_ativos
+    
     df_ativos['dias_interpolacao'] = df_ativos['duration'] * 252
+    
     def calc(row):
         try:
             d = row.get('dias_interpolacao', 0)
             t = row.get('taxa', 0)
             idx = str(row.get('indexador', '')).upper()
-            if d<=0 or t<=0: return None
             
-            ref = 'taxa_pre'
-            if 'IPCA' in idx: ref = 'taxa_ipca'
+            if d <= 0 or t <= 0: 
+                return None
+            
+            # SPREAD APENAS PARA IPCA E PRÉ
+            # CDI+ e %CDI não têm curva benchmark comparável
+            if 'IPCA' in idx:
+                ref = 'taxa_ipca'
+            elif 'PRÉ' in idx or 'PRE' in idx or 'PREFIXADO' in idx:
+                ref = 'taxa_pre'
+            else:
+                # CDI, %CDI, IGP-M e outros: não calcula spread
+                return None
             
             bench = interpolar_taxa_curva(df_curva, d, ref)
-            if bench: return (t - bench)*100
-        except: return None
+            if bench is not None: 
+                return (t - bench) * 100
+        except: 
+            return None
         return None
     
     df_ativos['spread_bps'] = df_ativos.apply(calc, axis=1)
+    
+    # Adiciona coluna de taxa benchmark para referência
+    def get_benchmark(row):
+        idx = str(row.get('indexador', '')).upper()
+        d = row.get('dias_interpolacao', 0)
+        if d <= 0:
+            return None
+        if 'IPCA' in idx:
+            return interpolar_taxa_curva(df_curva, d, 'taxa_ipca')
+        elif 'PRÉ' in idx or 'PRE' in idx or 'PREFIXADO' in idx:
+            return interpolar_taxa_curva(df_curva, d, 'taxa_pre')
+        return None
+    
+    df_ativos['taxa_benchmark'] = df_ativos.apply(get_benchmark, axis=1)
+    
     return df_ativos
 
 def get_curvas_anbima_dates():
@@ -514,21 +550,35 @@ def get_metrics_by_category(df):
 def get_consolidation_stats(df):
     """
     Retorna estatísticas de consolidação de dados.
+    IMPORTANTE: A soma das categorias deve ser igual ao total.
+    - SND + ANBIMA: ativos com dados de ambas as fontes
+    - Somente ANBIMA: ativos com apenas preços indicativos
+    - Somente SND: ativos com apenas dados de negociação SND
+    - Cadastro: ativos apenas no cadastro, sem preço de mercado
     """
     if df.empty or 'FONTE' not in df.columns:
         return None
     
     total = len(df)
+    
+    # Contagem por fonte (mutuamente exclusivas)
     stats = {
         'total': total,
-        'snd_only': len(df[df['FONTE'] == 'SND']),
-        'anbima_only': len(df[df['FONTE'] == 'Anbima']),
         'consolidado': len(df[df['FONTE'] == 'SND + Anbima']),
+        'anbima_only': len(df[df['FONTE'] == 'Anbima']),
+        'snd_only': len(df[df['FONTE'] == 'SND']),
         'cadastro_only': len(df[df['FONTE'] == 'Cadastro'])
     }
     
+    # Validação: a soma deve bater
+    soma = stats['consolidado'] + stats['anbima_only'] + stats['snd_only'] + stats['cadastro_only']
+    if soma != total:
+        # Ajusta cadastro_only para incluir qualquer fonte não mapeada
+        outros = total - soma
+        stats['cadastro_only'] += outros
+    
     # Calcula percentuais
-    for key in ['snd_only', 'anbima_only', 'consolidado', 'cadastro_only']:
+    for key in ['consolidado', 'anbima_only', 'snd_only', 'cadastro_only']:
         stats[f'{key}_pct'] = (stats[key] / total * 100) if total > 0 else 0
     
     return stats
