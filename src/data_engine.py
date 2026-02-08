@@ -125,7 +125,6 @@ def get_available_dates():
     """Retorna datas disponíveis combinando todas as tabelas"""
     datas = set()
     
-    # 1. Datas de Negociação
     if os.path.exists(DB_DEBENTURES):
         try:
             conn = sqlite3.connect(DB_DEBENTURES)
@@ -140,7 +139,6 @@ def get_available_dates():
             conn.close()
         except: pass
 
-    # 2. Datas de Curvas
     if os.path.exists(DB_CURVAS):
         try:
             conn = sqlite3.connect(DB_CURVAS)
@@ -199,7 +197,6 @@ def load_data(selected_date_str):
     if not os.path.exists(DB_DEBENTURES):
         return None, "Banco de dados não encontrado."
 
-    # Prepara data em formato ISO
     try:
         dt_obj = datetime.strptime(selected_date_str, "%d/%m/%Y")
         date_iso = dt_obj.strftime("%Y-%m-%d")
@@ -264,10 +261,9 @@ def load_data(selected_date_str):
     except Exception as e:
         return None, str(e)
 
-# --- FUNÇÃO QUE FALTAVA ---
 def apply_filters(df, filtros):
     """
-    Aplica filtros ao DataFrame (Essencial para o Screener Pro)
+    Aplica filtros ao DataFrame
     """
     df_f = df.copy()
     
@@ -293,6 +289,53 @@ def apply_filters(df, filtros):
     if "duration_max" in filtros: df_f = df_f[df_f["duration"] <= filtros["duration_max"]]
         
     return df_f
+
+# --- FUNÇÃO RESTAURADA PARA AUDITORIA ---
+def get_data_quality_report(df):
+    """Gera relatório de qualidade dos dados"""
+    report = {
+        "total_registros": len(df),
+        "campos_completos": {},
+        "duplicatas": 0,
+        "inconsistencias": []
+    }
+    
+    # Análise de completude por campo
+    campos_criticos = ['codigo', 'emissor', 'indexador', 'taxa', 'duration']
+    for campo in campos_criticos:
+        if campo in df.columns:
+            total = len(df)
+            validos = df[campo].notna().sum() if campo != 'taxa' else (df[campo] > 0).sum()
+            report["campos_completos"][campo] = {
+                "validos": int(validos),
+                "invalidos": int(total - validos),
+                "percentual": round((validos / total * 100), 2) if total > 0 else 0
+            }
+    
+    # Detecção de duplicatas (mesmo código, mesma data)
+    if 'codigo' in df.columns and 'data_referencia' in df.columns:
+        duplicatas = df.duplicated(subset=['codigo', 'data_referencia'], keep=False)
+        report["duplicatas"] = int(duplicatas.sum())
+    
+    # Inconsistências
+    if 'taxa' in df.columns:
+        taxas_negativas = (df['taxa'] < 0).sum()
+        if taxas_negativas > 0:
+            report["inconsistencias"].append(f"{taxas_negativas} taxas negativas")
+    
+    if 'duration' in df.columns:
+        durations_negativas = (df['duration'] < 0).sum()
+        if durations_negativas > 0:
+            report["inconsistencias"].append(f"{durations_negativas} durations negativas")
+    
+    # Score geral (0-100)
+    completude_media = sum([v["percentual"] for v in report["campos_completos"].values()]) / len(report["campos_completos"]) if report["campos_completos"] else 0
+    penalidade_duplicatas = min((report["duplicatas"] / report["total_registros"] * 100), 20) if report["total_registros"] > 0 else 0
+    penalidade_inconsistencias = min(len(report["inconsistencias"]) * 5, 20)
+    
+    report["score_qualidade"] = max(0, completude_media - penalidade_duplicatas - penalidade_inconsistencias)
+    
+    return report
 
 # --- AUXILIARES ---
 def get_volume_summary(): return None
