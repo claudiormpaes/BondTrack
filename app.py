@@ -146,28 +146,28 @@ with st.sidebar:
         db_status = engine.get_database_status(data_ref if data_ref else None)
         
         # SND Cadastro
-        if db_status['snd_cadastro']['loaded']:
+        if db_status['snd_cadastro']['loaded'] and db_status['snd_cadastro']['count'] > 0:
             st.markdown(f"✅ **SND Cadastro** ({db_status['snd_cadastro']['count']:,} ativos)")
         else:
-            st.markdown("⬜ **SND Cadastro** (não carregado)")
+            st.markdown("🔴 **SND Cadastro** (sem dados)")
         
         # SND Negociação
         if db_status['snd_negociacao']['loaded'] and db_status['snd_negociacao']['count'] > 0:
             st.markdown(f"✅ **SND Negociação** ({db_status['snd_negociacao']['count']:,} registros)")
         else:
-            st.markdown("⬜ **SND Negociação** (sem dados)")
+            st.markdown("🔴 **SND Negociação** (sem dados)")
         
-        # ANBIMA Preços
+        # ANBIMA Indicativa (antes ANBIMA Preços)
         if db_status['anbima_precos']['loaded'] and db_status['anbima_precos']['count'] > 0:
-            st.markdown(f"✅ **ANBIMA Preços** ({db_status['anbima_precos']['count']:,} registros)")
+            st.markdown(f"✅ **ANBIMA Indicativa** ({db_status['anbima_precos']['count']:,} registros)")
         else:
-            st.markdown("⬜ **ANBIMA Preços** (sem dados)")
+            st.markdown("🔴 **ANBIMA Indicativa** (sem dados)")
         
-        # ANBIMA Curvas
+        # ANBIMA ETTJ (antes ANBIMA Curvas)
         if db_status['anbima_curvas']['loaded'] and db_status['anbima_curvas']['count'] > 0:
-            st.markdown(f"✅ **ANBIMA Curvas** ({db_status['anbima_curvas']['count']:,} pontos)")
+            st.markdown(f"✅ **ANBIMA ETTJ** ({db_status['anbima_curvas']['count']:,} pontos)")
         else:
-            st.markdown("⬜ **ANBIMA Curvas** (sem dados)")
+            st.markdown("🔴 **ANBIMA ETTJ** (sem dados)")
     except:
         st.info("Status indisponível")
     
