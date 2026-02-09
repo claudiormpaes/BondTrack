@@ -32,7 +32,6 @@ def smart_clean(df):
         temp_map[col] = clean
     df = df.rename(columns=temp_map)
     
-    # Mapeamento de Colunas
     keywords = {
         "taxa": ["taxa_indicativa", "taxa_emissao", "taxa_compra", "taxa", "taxa_media"],
         "duration": ["duration", "duracao", "du"],
@@ -54,7 +53,6 @@ def smart_clean(df):
                 break
     df = df.rename(columns=final_map)
 
-    # Tratamento Numérico
     for col in ['taxa', 'duration', 'volume', 'negocios']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
@@ -62,11 +60,9 @@ def smart_clean(df):
     if 'pu' in df.columns:
         df['pu'] = pd.to_numeric(df['pu'], errors='coerce')
 
-    # Ajuste de Duration
     if not df.empty and 'duration' in df.columns and df['duration'].mean() > 50:
         df['duration'] = df['duration'] / 252
 
-    # Higienização de Texto
     if 'indexador' not in df.columns: df['indexador'] = 'N/D'
     df['indexador'] = df['indexador'].fillna('N/D').astype(str).str.upper().str.strip()
     
@@ -81,7 +77,6 @@ def smart_clean(df):
     if 'emissor' not in df.columns: df['emissor'] = 'N/D'
     df['emissor'] = df['emissor'].fillna('N/D').astype(str).str.split("-").str[0].str.strip()
     
-    # Categorização
     def classificar(row):
         idx = row.get("indexador", "N/D")
         taxa = row.get("taxa", 0)
@@ -111,7 +106,6 @@ def smart_clean(df):
 
 @st.cache_data(ttl=60)
 def get_available_dates():
-    """Retorna lista de datas disponíveis"""
     datas = set()
     if os.path.exists(DB_DEBENTURES):
         try:
@@ -142,7 +136,6 @@ def get_available_dates():
 
 @st.cache_data(ttl=60)
 def load_data(selected_date_str):
-    """Carrega dados combinando: SND + ANBIMA + Cadastro"""
     if not os.path.exists(DB_DEBENTURES):
         return None, "Banco de dados não encontrado."
 
@@ -160,13 +153,11 @@ def load_data(selected_date_str):
     df_cadastro = pd.DataFrame()
 
     try:
-        # 1. SND
         try:
             q_snd = f"SELECT * FROM negociacao_snd WHERE data_base = '{date_iso}'"
             df_snd = pd.read_sql(q_snd, conn)
         except: pass
         
-        # 2. ANBIMA
         try:
             q_anb = f"SELECT * FROM mercado_secundario WHERE data_referencia = '{date_br}'"
             df_anbima = pd.read_sql(q_anb, conn)
@@ -175,7 +166,6 @@ def load_data(selected_date_str):
                 df_anbima = pd.read_sql(q_anb, conn)
         except: pass
 
-        # 3. Cadastro
         try:
             df_cadastro = pd.read_sql("SELECT * FROM cadastro_snd", conn)
         except: pass
@@ -188,7 +178,6 @@ def load_data(selected_date_str):
     if df_snd.empty and df_anbima.empty and df_cadastro.empty:
         return pd.DataFrame(), None
 
-    # Merge
     if not df_snd.empty and 'codigo' in df_snd.columns:
         df_snd['codigo'] = df_snd['codigo'].str.strip().str.upper()
     if not df_anbima.empty and 'codigo' in df_anbima.columns:
@@ -250,8 +239,6 @@ def load_curva_anbima(target_date=None):
     except: return pd.DataFrame()
     finally: conn.close()
 
-# --- FUNÇÕES AUXILIARES ---
-
 def apply_filters(df, filtros):
     df_f = df.copy()
     if filtros.get("emissor"): df_f = df_f[df_f["emissor"].isin(filtros["emissor"])]
@@ -266,14 +253,35 @@ def apply_filters(df, filtros):
     if "duration_max" in filtros: df_f = df_f[df_f["duration"] <= filtros["duration_max"]]
     return df_f
 
+# === AQUI ESTAVA O ERRO: Função get_data_quality_report corrigida ===
 def get_data_quality_report(df):
-    report = {"total_registros": len(df), "campos_completos": {}, "duplicatas": 0, "inconsistencias": []}
+    report = {
+        "total_registros": len(df),
+        "campos_completos": {},
+        "duplicatas": 0,
+        "inconsistencias": []
+    }
+    
+    # Verifica campos críticos
     for c in ['codigo', 'emissor', 'taxa', 'duration', 'volume']:
         if c in df.columns:
             valid = df[c].notna().sum()
-            if c in ['taxa', 'volume']: valid = (df[c] > 0).sum()
-            report["campos_completos"][c] = {"validos": int(valid), "percentual": round(valid/len(df)*100, 1) if len(df)>0 else 0}
-    if 'codigo' in df.columns: report["duplicatas"] = int(df.duplicated(subset=['codigo']).sum())
+            # Para taxas e volume, zero pode ser considerado inválido dependendo da regra
+            if c in ['taxa', 'volume']: 
+                valid = (df[c] > 0).sum()
+            
+            total = len(df)
+            invalid = total - valid
+            
+            report["campos_completos"][c] = {
+                "validos": int(valid),
+                "invalidos": int(invalid), # ESSA CHAVE ESTAVA FALTANDO
+                "percentual": round(valid/total*100, 1) if total>0 else 0
+            }
+            
+    if 'codigo' in df.columns:
+        report["duplicatas"] = int(df.duplicated(subset=['codigo']).sum())
+        
     report["score_qualidade"] = 100
     return report
 
@@ -325,16 +333,6 @@ def adicionar_spreads_ao_df(df_ativos, df_curva):
         return None
     
     df_ativos['spread_bps'] = df_ativos.apply(calc, axis=1)
-    
-    def get_benchmark(row):
-        idx = str(row.get('indexador', '')).upper()
-        d = row.get('dias_interpolacao', 0)
-        if d <= 0: return None
-        if 'IPCA' in idx: return interpolar_taxa_curva(df_curva, d, 'taxa_ipca')
-        elif 'PRÉ' in idx or 'PRE' in idx: return interpolar_taxa_curva(df_curva, d, 'taxa_pre')
-        return None
-    df_ativos['taxa_benchmark'] = df_ativos.apply(get_benchmark, axis=1)
-    
     return df_ativos
 
 def get_curvas_anbima_dates():
@@ -377,32 +375,3 @@ def get_database_status_full(data_ref=None):
             conn.close()
         except: pass
     return status
-
-def get_metrics_by_category(df):
-    if df.empty or 'categoria_grafico' not in df.columns: return {}
-    cats = df['categoria_grafico'].unique()
-    metrics = {}
-    for c in cats:
-        d = df[df['categoria_grafico'] == c]
-        metrics[c] = {
-            'quantidade': len(d),
-            'taxa_media': d[d['taxa']>0]['taxa'].mean() if 'taxa' in d else 0,
-            'duration_media': d[d['duration']>0]['duration'].mean() if 'duration' in d else 0,
-            'spread_medio': d[d['spread_bps'].notna()]['spread_bps'].mean() if 'spread_bps' in d else None
-        }
-    return metrics
-
-def get_consolidation_stats(df):
-    if df.empty or 'FONTE' not in df.columns: return None
-    total = len(df)
-    counts = df['FONTE'].value_counts()
-    return {
-        'consolidado': counts.get('SND + Anbima', 0),
-        'consolidado_pct': counts.get('SND + ANBIMA', 0) / total * 100,
-        'snd_only': counts.get('SND', 0),
-        'snd_only_pct': counts.get('SND', 0) / total * 100,
-        'anbima_only': counts.get('Anbima', 0),
-        'anbima_only_pct': counts.get('Anbima', 0) / total * 100,
-        'cadastro_only': counts.get('Cadastro', 0),
-        'cadastro_only_pct': counts.get('Cadastro', 0) / total * 100
-    }
