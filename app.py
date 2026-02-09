@@ -27,157 +27,68 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ===== CSS CUSTOMIZADO (DARK MODE PROFISSIONAL) =====
+# ===== CSS CUSTOMIZADO =====
 st.markdown("""
 <style>
-    /* Background principal */
     .main { background-color: #0e1117; }
-    
-    /* Métricas */
-    [data-testid="stMetricValue"] {
-        font-size: 1.8rem;
-        font-weight: 700;
-        color: #00CC96;
-    }
-    [data-testid="stMetricLabel"] {
-        font-size: 1rem;
-        color: #fafafa;
-    }
-    
-    /* Títulos */
+    [data-testid="stMetricValue"] { font-size: 1.8rem; font-weight: 700; color: #00CC96; }
     h1 { color: #fafafa; font-weight: 800; }
     h2, h3 { color: #00CC96; }
-    
-    /* Sidebar */
     [data-testid="stSidebar"] { background-color: #1a1d24; }
-    
-    /* Cards */
-    .stAlert {
-        background-color: #1a1d24;
-        border-left: 4px solid #00CC96;
-    }
-    
-    /* Botões */
-    .stButton>button {
-        background-color: #00CC96;
-        color: #0e1117;
-        font-weight: 600;
-        border-radius: 8px;
-        border: none;
-        padding: 0.5rem 2rem;
-    }
-    .stButton>button:hover {
-        background-color: #AB63FA;
-        color: #fafafa;
-    }
-    
-    /* Logo container */
-    .logo-container {
-        text-align: center;
-        padding: 10px;
-        margin-bottom: 10px;
-    }
+    .stAlert { background-color: #1a1d24; border-left: 4px solid #00CC96; }
+    .stButton>button { background-color: #00CC96; color: #0e1117; font-weight: 600; border-radius: 8px; border: none; }
+    .stButton>button:hover { background-color: #AB63FA; color: #fafafa; }
 </style>
 """, unsafe_allow_html=True)
 
 # ===== SIDEBAR =====
 with st.sidebar:
-    # Logo
     logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
-    if os.path.exists(logo_path):
-       st.image(logo_path, use_container_width=True)
-    else:
-        st.title("BondTrack")
+    if os.path.exists(logo_path): st.image(logo_path, use_container_width=True)
+    else: st.title("BondTrack")
     
-    st.markdown("**Plataforma Profissional de Análise de Debêntures**")
+    st.markdown("**Plataforma Profissional**")
     st.divider()
     
-    # --- SELEÇÃO DE DATA COM MEMÓRIA (CRUCIAL PARA NÃO RESETAR) ---
     try:
         datas_disponiveis = engine.get_available_dates()
-    except:
-        datas_disponiveis = []
+    except: datas_disponiveis = []
     
     if datas_disponiveis:
-        # Se não tiver data na memória, usa a primeira (mais recente)
         if 'global_data_ref' not in st.session_state:
             st.session_state['global_data_ref'] = datas_disponiveis[0]
-        
-        # Validação: Se a data da memória sumiu da lista, reseta
         if st.session_state['global_data_ref'] not in datas_disponiveis:
              st.session_state['global_data_ref'] = datas_disponiveis[0]
 
-        # O widget atualiza a memória
         data_ref = st.selectbox(
             "Data de Referência",
             datas_disponiveis,
             index=datas_disponiveis.index(st.session_state['global_data_ref']),
-            key='app_date_widget', # Chave única para este widget
-            on_change=lambda: st.session_state.update({'global_data_ref': st.session_state.app_date_widget}),
-            help="Selecione a data base para análise"
+            key='app_date_widget',
+            on_change=lambda: st.session_state.update({'global_data_ref': st.session_state.app_date_widget})
         )
-        # Atualiza a variável principal para uso local
         st.session_state['global_data_ref'] = data_ref
-        
     else:
-        st.error("Nenhuma data disponível no banco de dados")
+        st.error("Sem dados")
         data_ref = None
     
     st.divider()
-    
-    # Status dos Bancos de Dados (Checkbox visual)
-    st.markdown("### 📊 Status dos Dados")
-    
+    st.markdown("### 📊 Status")
     try:
-        db_status = engine.get_database_status_full(data_ref if data_ref else None)
-        
-        # SND Cadastro
-        if db_status['snd_cadastro']['loaded'] and db_status['snd_cadastro']['count'] > 0:
-            st.markdown(f"✅ **SND Cadastro** ({db_status['snd_cadastro']['count']:,} ativos)")
-        else:
-            st.markdown("🔴 **SND Cadastro** (sem dados)")
-        
-        # SND Negociação
-        if db_status['snd_negociacao']['loaded'] and db_status['snd_negociacao']['count'] > 0:
-            st.markdown(f"✅ **SND Negociação** ({db_status['snd_negociacao']['count']:,} registros)")
-        else:
-            st.markdown("🔴 **SND Negociação** (sem dados)")
-        
-        # ANBIMA Indicativa (Taxas de Referência)
-        if db_status.get('anbima_indicativa', {}).get('loaded') and db_status['anbima_indicativa']['count'] > 0:
-            st.markdown(f"✅ **ANBIMA Indicativa** ({db_status['anbima_indicativa']['count']:,} registros)")
-        elif db_status['anbima_precos']['loaded'] and db_status['anbima_precos']['count'] > 0:
-            st.markdown(f"✅ **ANBIMA Preços** ({db_status['anbima_precos']['count']:,} registros)")
-        else:
-            st.markdown("🔴 **ANBIMA Indicativa** (sem dados)")
-        
-        # ANBIMA ETTJ (Curvas)
-        if db_status['anbima_curvas']['loaded'] and db_status['anbima_curvas']['count'] > 0:
-            st.markdown(f"✅ **ANBIMA ETTJ** ({db_status['anbima_curvas']['count']:,} pontos)")
-        else:
-            st.markdown("🔴 **ANBIMA ETTJ** (sem dados)")
-    except:
-        st.info("Status indisponível")
+        db_status = engine.get_database_status_full(data_ref)
+        if db_status['snd_negociacao']['loaded']:
+            st.caption(f"✅ SND: {db_status['snd_negociacao']['count']} regs")
+        if db_status['anbima_indicativa']['loaded']:
+            st.caption(f"✅ ANBIMA: {db_status['anbima_indicativa']['count']} regs")
+    except: pass
     
     st.divider()
-    
-    # Informações do Sistema
     st.markdown("### Sobre")
-    st.info("""
-    **BondTrack v1.2**
-    
-    Desenvolvido para análise profissional 
-    do mercado de debêntures brasileiro.
-    
-    Dados: SND + ANBIMA  
-    Curva de Juros: ANBIMA  
-    Atualização: Diária  
-    """)
+    st.info("BondTrack v1.2\nSND + ANBIMA")
 
 # ===== CONTEÚDO PRINCIPAL =====
-st.title("BondTrack - Central de Inteligência de Debêntures")
+st.title("BondTrack - Visão Geral")
 
-# Carregar dados
 if data_ref:
     try:
         df, erro = engine.load_data(data_ref)
@@ -185,439 +96,188 @@ if data_ref:
         st.error(f"Erro crítico: {e}")
         st.stop()
     
-    if erro:
-        st.error(f"Erro ao carregar dados: {erro}")
-        st.stop()
+    if erro: st.error(erro); st.stop()
+    if df is None or df.empty: st.warning("Sem dados"); st.stop()
     
-    if df is None or df.empty:
-        st.warning("Nenhum dado disponível para a data selecionada")
-        st.stop()
-    
-    # Carregar curva ANBIMA e adicionar spreads
     try:
         curva_df = engine.load_curva_anbima(data_ref)
         if not curva_df.empty:
             df = engine.adicionar_spreads_ao_df(df, curva_df)
             curva_disponivel = True
-        else:
-            curva_disponivel = False
-    except:
-        curva_disponivel = False
+        else: curva_disponivel = False
+    except: curva_disponivel = False
     
-    # Carregar dados de volume
-    try:
-        volume_summary = engine.get_volume_summary()
-    except:
-        volume_summary = None
+    volume_summary = engine.get_volume_summary()
     
-    # ===== KPIs DO DIA (RESTAURADO) =====
-    st.markdown(f"### Indicadores do Mercado - {data_ref}")
+    # ===== KPIs =====
+    st.markdown(f"### Indicadores - {data_ref}")
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    total = len(df)
+    c1.metric("Ativos", total)
     
-    with col1:
-        total_ativos = len(df)
-        st.metric("Total de Ativos", f"{total_ativos:,}")
+    consol = len(df[df['FONTE'] == 'SND + Anbima']) if 'FONTE' in df else 0
+    c2.metric("Consolidados", f"{consol}", f"{consol/total*100:.0f}%" if total>0 else "0%")
     
-    with col2:
-        if 'FONTE' in df.columns:
-            consolidados = len(df[df['FONTE'] == 'SND + Anbima'])
-            pct = (consolidados/total_ativos*100) if total_ativos > 0 else 0
-            st.metric("Consolidados", f"{consolidados:,}", f"{pct:.0f}%")
-        else:
-            st.metric("Consolidados", "N/D")
+    df_ok = df[df['taxa'] > 0]
+    c3.metric("Taxa Média", f"{df_ok['taxa'].mean():.2f}%" if not df_ok.empty else "0%")
     
-    with col3:
-        if 'taxa' in df.columns:
-            df_com_preco = df[df['taxa'] > 0]
-            taxa_media = df_com_preco['taxa'].mean() if not df_com_preco.empty else 0
-            st.metric("Taxa Média", f"{taxa_media:.2f}%")
-        else:
-            st.metric("Taxa Média", "N/D")
+    df_dur = df[df['duration'] > 0]
+    c4.metric("Duration", f"{df_dur['duration'].mean():.2f} anos" if not df_dur.empty else "0")
     
-    with col4:
-        if 'duration' in df.columns:
-            duration_media = df[df['duration'] > 0]['duration'].mean() if len(df[df['duration'] > 0]) > 0 else 0
-            st.metric("Duration Médio", f"{duration_media:.2f} anos")
-        else:
-            st.metric("Duration Médio", "N/D")
+    if curva_disponivel and 'spread_bps' in df.columns:
+        spr = df[df['spread_bps'].notna()]['spread_bps'].mean()
+        c5.metric("Spread", f"{spr:.0f} bps")
+    else: c5.metric("Spread", "N/D")
     
-    with col5:
-        # Spread médio (se disponível)
-        if curva_disponivel and 'spread_bps' in df.columns:
-            df_spread = df[df['spread_bps'].notna()]
-            spread_medio = df_spread['spread_bps'].mean() if not df_spread.empty else 0
-            st.metric("Spread Médio", f"{spread_medio:.0f} bps")
-        elif 'indexador' in df.columns:
-            indexadores_unicos = df['indexador'].nunique()
-            st.metric("Indexadores", f"{indexadores_unicos}")
-        else:
-            st.metric("Spread Médio", "N/D")
-    
-    with col6:
-        # Volume Total Negociado
-        if volume_summary:
-            volume_total = volume_summary.get('volume_total', 0)
-            if volume_total >= 1_000_000_000:
-                volume_str = f"R$ {volume_total/1_000_000_000:.1f}B"
-            elif volume_total >= 1_000_000:
-                volume_str = f"R$ {volume_total/1_000_000:.1f}M"
-            else:
-                volume_str = f"R$ {volume_total:,.0f}"
-            
-            st.metric("Vol. Negociado", volume_str, f"{volume_summary.get('qtd_ativos', 0)} ativos")
-        else:
-            st.metric("Vol. Negociado", "N/D", "Sem dados")
+    if volume_summary:
+        vol = volume_summary['volume_total']
+        val_fmt = f"R$ {vol/1e9:.1f}B" if vol > 1e9 else f"R$ {vol/1e6:.1f}M"
+        c6.metric("Volume", val_fmt)
+    else: c6.metric("Volume", "N/D")
     
     st.divider()
     
-    # ===== VISÃO GERAL DO MERCADO (GRÁFICOS) =====
-    col_left, col_right = st.columns([2, 1])
-    
-    with col_left:
-        st.markdown("### Mapa de Risco x Retorno")
-        
-        if 'taxa' in df.columns and 'duration' in df.columns:
-            # Filtrar dados válidos para o gráfico
-            df_grafico = df[(df['taxa'] > 0) & (df['duration'] > 0)].copy()
-            
-            if not df_grafico.empty:
-                fig = visuals.create_scatter_risco_retorno(
-                    df_grafico,
-                    title=f"Curva de Juros - {data_ref}",
-                    height=500
-                )
+    # ===== GRÁFICOS =====
+    cl, cr = st.columns([2, 1])
+    with cl:
+        st.markdown("### Risco x Retorno")
+        if 'taxa' in df and 'duration' in df:
+            dfg = df[(df['taxa']>0) & (df['duration']>0)].copy()
+            if not dfg.empty:
+                fig = visuals.create_scatter_risco_retorno(dfg, title=f"Curva {data_ref}", height=500)
                 st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("Dados insuficientes para gerar o gráfico")
-        else:
-            st.warning("Colunas de Taxa ou Duration ausentes.")
+            else: st.info("Sem dados gráficos")
     
-    with col_right:
-        st.markdown("### Distribuição por Categoria")
-        
-        if 'categoria_grafico' in df.columns:
-            if not df.empty:
-                fig_pie = visuals.create_pie_distribuicao(
-                    df,
-                    names_col='categoria_grafico',
-                    title="",
-                    hole=0.5
-                )
-                st.plotly_chart(fig_pie, use_container_width=True)
-        
-        st.markdown("### Distribuição por Fonte")
-        
-        if 'FONTE' in df.columns:
-            fonte_counts = df['FONTE'].value_counts()
-            for fonte, count in fonte_counts.items():
-                pct = (count / total_ativos * 100)
-                st.metric(
-                    label=fonte,
-                    value=f"{count:,}",
-                    delta=f"{pct:.1f}%"
-                )
-    
+    with cr:
+        st.markdown("### Categoria")
+        if 'categoria_grafico' in df and not df.empty:
+            fig2 = visuals.create_pie_distribuicao(df, names_col='categoria_grafico', hole=0.5)
+            st.plotly_chart(fig2, use_container_width=True)
+            
     st.divider()
     
-    # ===== DESTAQUES DO MERCADO (TABELAS RESTAURADAS) =====
-    st.markdown("### Destaques do Mercado")
+    # ===== DESTAQUES (TABELAS CORRIGIDAS COM column_config) =====
+    st.markdown("### Destaques")
+    cd1, cd2 = st.columns(2)
     
-    col_dest1, col_dest2 = st.columns(2)
-    
-    with col_dest1:
+    with cd1:
         st.markdown("#### Maiores Taxas")
-        cols_taxa = ['codigo', 'emissor', 'taxa', 'indexador']
-        if curva_disponivel and 'spread_bps' in df.columns:
-            cols_taxa.append('spread_bps')
-        
-        # Garante colunas
-        cols_ok = [c for c in cols_taxa if c in df.columns]
-        
-        if 'taxa' in df.columns:
-            df_top_taxas = df[df['taxa'] > 0].nlargest(5, 'taxa')[cols_ok]
+        if 'taxa' in df:
+            cols = ['codigo', 'emissor', 'taxa', 'indexador']
+            if 'spread_bps' in df: cols.append('spread_bps')
+            cols = [c for c in cols if c in df.columns]
             
-            format_dict = {'taxa': '{:.2f}%'}
-            if 'spread_bps' in df_top_taxas.columns:
-                format_dict['spread_bps'] = '{:.0f} bps'
+            top_tx = df[df['taxa']>0].nlargest(5, 'taxa')[cols]
             
             st.dataframe(
-                df_top_taxas.style.format(format_dict),
-                hide_index=True,
+                top_tx,
+                column_config={
+                    "taxa": st.column_config.NumberColumn("Taxa", format="%.2f%%"),
+                    "spread_bps": st.column_config.NumberColumn("Spread", format="%.0f bps"),
+                },
+                hide_index=True, 
                 use_container_width=True
             )
-    
-    with col_dest2:
+            
+    with cd2:
         st.markdown("#### Maiores Durations")
-        cols_dur = ['codigo', 'emissor', 'duration', 'indexador']
-        cols_ok = [c for c in cols_dur if c in df.columns]
-        
-        if 'duration' in df.columns:
-            df_top_duration = df[df['duration'] > 0].nlargest(5, 'duration')[cols_ok]
+        if 'duration' in df:
+            cols = ['codigo', 'emissor', 'duration']
+            cols = [c for c in cols if c in df.columns]
+            top_dur = df[df['duration']>0].nlargest(5, 'duration')[cols]
+            
             st.dataframe(
-                df_top_duration.style.format({'duration': '{:.2f}'}),
-                hide_index=True,
+                top_dur,
+                column_config={
+                    "duration": st.column_config.NumberColumn("Duration (Anos)", format="%.2f")
+                },
+                hide_index=True, 
                 use_container_width=True
             )
+
+    col_d3, col_d4 = st.columns(2)
     
-    col_dest3, col_dest4 = st.columns(2)
-    
-    with col_dest3:
-        st.markdown("#### IPCA Incentivados (Top Spreads)")
-        if 'categoria_grafico' in df.columns:
-            df_incentivados = df[df['categoria_grafico'] == 'IPCA Incentivado']
-            
-            if not df_incentivados.empty:
-                if 'spread_bps' in df_incentivados.columns:
-                    # Se tiver spread, ordena por spread
-                    df_show = df_incentivados[df_incentivados['spread_bps'].notna()].nlargest(5, 'spread_bps')
-                    cols = ['codigo', 'emissor', 'taxa', 'spread_bps']
-                    fmt = {'taxa': '{:.2f}%', 'spread_bps': '{:.0f} bps'}
-                else:
-                    # Senão, ordena por taxa
-                    df_show = df_incentivados.nlargest(5, 'taxa')
-                    cols = ['codigo', 'emissor', 'taxa']
-                    fmt = {'taxa': '{:.2f}%'}
+    with col_d3:
+        st.markdown("#### IPCA Incentivados")
+        if 'categoria_grafico' in df:
+            df_inc = df[df['categoria_grafico'] == 'IPCA Incentivado']
+            if not df_inc.empty:
+                cols_inc = ['codigo', 'emissor', 'taxa']
+                if 'spread_bps' in df: cols_inc.append('spread_bps')
+                cols_inc = [c for c in cols_inc if c in df.columns]
                 
-                cols_ok = [c for c in cols if c in df_show.columns]
+                # Ordena por spread se existir, senão por taxa
+                if 'spread_bps' in df_inc.columns:
+                    top_inc = df_inc.nlargest(5, 'spread_bps')[cols_inc]
+                else:
+                    top_inc = df_inc.nlargest(5, 'taxa')[cols_inc]
                 
                 st.dataframe(
-                    df_show[cols_ok].style.format(fmt),
-                    hide_index=True,
+                    top_inc,
+                    column_config={
+                        "taxa": st.column_config.NumberColumn("Taxa", format="%.2f%%"),
+                        "spread_bps": st.column_config.NumberColumn("Spread", format="%.0f bps"),
+                    },
+                    hide_index=True, 
                     use_container_width=True
                 )
             else:
-                st.info("Nenhum ativo incentivado encontrado.")
-        else:
-            st.info("Categoria não disponível.")
-    
-    with col_dest4:
-        st.markdown("#### Ativos Mais Negociados")
+                st.info("Nenhum IPCA Incentivado.")
+
+    with col_d4:
+        st.markdown("#### Maior Volume")
         try:
-            df_top_volume = engine.get_top_volume(5)
-            
-            if df_top_volume is not None and not df_top_volume.empty:
-                # Formatar volume
-                if 'volume_total' in df_top_volume.columns:
-                    df_top_volume['volume_fmt'] = df_top_volume['volume_total'].apply(
-                        lambda x: f"R$ {x/1_000_000:.1f}M" if x >= 1_000_000 else f"R$ {x:,.0f}"
-                    )
-                    cols_show = ['codigo', 'emissor', 'volume_fmt', 'numero_negocios']
-                    cols_final = [c for c in cols_show if c in df_top_volume.columns]
-                    
-                    df_display = df_top_volume[cols_final].rename(columns={
-                        'volume_fmt': 'Volume',
-                        'numero_negocios': 'Negócios'
-                    })
-                    st.dataframe(df_display, hide_index=True, use_container_width=True)
-            else:
-                st.info("Dados de volume não disponíveis.")
-        except:
-            st.info("Erro ao buscar volume.")
-    
-    st.divider()
-    
-    # ===== RESUMO POR INDEXADOR =====
-    st.markdown("### Resumo por Indexador")
-    
-    if 'indexador' in df.columns:
-        indexadores_principais = ['IPCA', 'CDI', 'PRÉ', 'IGP-M']
-        resumo_data = []
-        
-        for idx in indexadores_principais:
-            # Filtro case insensitive seguro
-            df_idx = df[df['indexador'].str.contains(idx, na=False, case=False)]
-            
-            if not df_idx.empty:
-                row_data = {
-                    'Indexador': idx,
-                    'Quantidade': len(df_idx),
-                    'Taxa Média': df_idx[df_idx['taxa'] > 0]['taxa'].mean() if 'taxa' in df_idx else 0,
-                    'Duration Médio': df_idx[df_idx['duration'] > 0]['duration'].mean() if 'duration' in df_idx else 0
+            df_vol = engine.get_top_volume(5)
+            if not df_vol.empty:
+                # Prepara colunas
+                cols_v = ['codigo', 'emissor', 'volume_total']
+                cols_v = [c for c in cols_v if c in df_vol.columns]
+                
+                st.dataframe(
+                    df_vol[cols_v],
+                    column_config={
+                        "volume_total": st.column_config.NumberColumn("Volume", format="R$ %.0f")
+                    },
+                    hide_index=True,
+                    use_container_width=True
+                )
+        except: st.info("Sem dados de volume.")
+
+    # ===== RESUMO INDEXADORES =====
+    st.markdown("### Indexadores")
+    if 'indexador' in df:
+        idxs = ['IPCA', 'CDI', 'PRÉ']
+        data_res = []
+        for i in idxs:
+            d = df[df['indexador'].str.contains(i, na=False, case=False)]
+            if not d.empty:
+                row = {
+                    'Indexador': i,
+                    'Qtd': len(d),
+                    'Taxa Média': d[d['taxa']>0]['taxa'].mean() if 'taxa' in d else 0,
+                    'Spread Médio': d[d['spread_bps'].notna()]['spread_bps'].mean() if 'spread_bps' in d else 0
                 }
-                
-                if 'spread_bps' in df_idx.columns:
-                    df_spr = df_idx[df_idx['spread_bps'].notna()]
-                    row_data['Spread Médio (bps)'] = df_spr['spread_bps'].mean() if not df_spr.empty else 0
-                
-                resumo_data.append(row_data)
+                data_res.append(row)
         
-        if resumo_data:
-            df_resumo = pd.DataFrame(resumo_data)
-            format_dict = {
-                'Quantidade': '{:,.0f}',
-                'Taxa Média': '{:.2f}%',
-                'Duration Médio': '{:.2f} anos'
-            }
-            if 'Spread Médio (bps)' in df_resumo.columns:
-                format_dict['Spread Médio (bps)'] = '{:.0f}'
-            
+        if data_res:
+            dfr = pd.DataFrame(data_res)
             st.dataframe(
-                df_resumo.style.format(format_dict),
-                hide_index=True,
+                dfr,
+                column_config={
+                    "Taxa Média": st.column_config.NumberColumn(format="%.2f%%"),
+                    "Spread Médio": st.column_config.NumberColumn(format="%.0f bps"),
+                },
+                hide_index=True, 
                 use_container_width=True
             )
-    
-    # ===== MÉTRICAS POR CATEGORIA =====
-    st.markdown("### Métricas por Categoria")
-    
-    try:
-        metrics_cat = engine.get_metrics_by_category(df)
-        
-        if metrics_cat:
-            # Criar colunas para cada categoria
-            cols_cat = st.columns(len(metrics_cat))
-            
-            for idx, (cat, data) in enumerate(metrics_cat.items()):
-                with cols_cat[idx]:
-                    # Card da categoria
-                    cat_display = cat.replace('Incentivado', 'Incent.').replace('Não Incentivado', 'Não Incent.')
-                    st.markdown(f"**{cat_display}**")
-                    st.metric("Quantidade", f"{data['quantidade']:,}")
-                    st.metric("Taxa Média", f"{data['taxa_media']:.2f}%")
-                    st.metric("Duration", f"{data['duration_media']:.2f} anos")
-                    if data['spread_medio'] is not None:
-                        st.metric("Spread", f"{data['spread_medio']:.0f} bps")
-        else:
-            st.info("Dados de categoria não disponíveis.")
-    except Exception as e:
-        st.warning(f"Erro ao calcular métricas por categoria: {e}")
-    
-    st.divider()
-    
-    # ===== ANÁLISE DE CONSOLIDAÇÃO =====
-    st.markdown("### Análise de Consolidação")
-    
-    try:
-        consol_stats = engine.get_consolidation_stats(df)
-        
-        if consol_stats:
-            col_c1, col_c2, col_c3, col_c4 = st.columns(4)
-            
-            with col_c1:
-                st.metric(
-                    "SND + ANBIMA", 
-                    f"{consol_stats['consolidado']:,}",
-                    f"{consol_stats['consolidado_pct']:.1f}%"
-                )
-            with col_c2:
-                st.metric(
-                    "Somente SND", 
-                    f"{consol_stats['snd_only']:,}",
-                    f"{consol_stats['snd_only_pct']:.1f}%"
-                )
-            with col_c3:
-                st.metric(
-                    "Somente ANBIMA", 
-                    f"{consol_stats['anbima_only']:,}",
-                    f"{consol_stats['anbima_only_pct']:.1f}%"
-                )
-            with col_c4:
-                st.metric(
-                    "Somente Cadastro", 
-                    f"{consol_stats['cadastro_only']:,}",
-                    f"{consol_stats['cadastro_only_pct']:.1f}%"
-                )
-            
-            # Gráfico de pizza de consolidação
-            import plotly.graph_objects as go
-            
-            labels = ['SND + ANBIMA', 'Somente SND', 'Somente ANBIMA', 'Cadastro']
-            values = [consol_stats['consolidado'], consol_stats['snd_only'], 
-                     consol_stats['anbima_only'], consol_stats['cadastro_only']]
-            colors = ['#00CC96', '#636EFA', '#EF553B', '#AB63FA']
-            
-            # Remove valores zero
-            data_pie = [(l, v, c) for l, v, c in zip(labels, values, colors) if v > 0]
-            if data_pie:
-                labels_f, values_f, colors_f = zip(*data_pie)
-                
-                fig_consol = go.Figure(data=[go.Pie(
-                    labels=labels_f, 
-                    values=values_f,
-                    hole=0.4,
-                    marker_colors=colors_f
-                )])
-                fig_consol.update_layout(
-                    template='plotly_dark',
-                    paper_bgcolor='#0e1117',
-                    plot_bgcolor='#0e1117',
-                    height=300,
-                    showlegend=True,
-                    legend=dict(orientation='h', y=-0.1)
-                )
-                st.plotly_chart(fig_consol, use_container_width=True)
-    except Exception as e:
-        st.warning(f"Erro ao calcular estatísticas de consolidação: {e}")
-    
-    st.divider()
-    
-    # ===== INFO CURVA ANBIMA =====
-    if curva_disponivel:
-        with st.expander("Detalhes da Curva de Juros (ANBIMA)"):
-            try:
-                curva_dates = engine.get_curvas_anbima_dates()
-                data_curva = curva_dates[0] if curva_dates else "Desconhecida"
-                st.success(f"Dados interpolados da ANBIMA. Referência: {data_curva}")
-                
-                col_c1, col_c2, col_c3 = st.columns(3)
-                
-                # Taxa para 2 anos (~504 dias úteis)
-                taxa_2y = engine.interpolar_taxa_curva(curva_df, 504, 'taxa_ipca')
-                taxa_pre_2y = engine.interpolar_taxa_curva(curva_df, 504, 'taxa_pre')
-                infl_2y = engine.interpolar_taxa_curva(curva_df, 504, 'inflacao_implicita')
-                
-                with col_c1:
-                    st.metric("IPCA+ 2 anos", f"{taxa_2y:.2f}%" if taxa_2y else "N/D")
-                with col_c2:
-                    st.metric("Pré 2 anos", f"{taxa_pre_2y:.2f}%" if taxa_pre_2y else "N/D")
-                with col_c3:
-                    st.metric("Inflação Implícita 2 anos", f"{infl_2y:.2f}%" if infl_2y else "N/D")
-            except Exception as e:
-                st.warning(f"Não foi possível calcular detalhes da curva: {e}")
 
+    # Acesso Rápido
     st.divider()
-    
-    # ===== ACESSO RÁPIDO =====
-    st.markdown("### Acesso Rápido")
-    
-    col_a, col_b, col_c, col_d, col_e = st.columns(5)
-    
-    with col_a:
-        if st.button("Radar de Mercado", use_container_width=True):
-            st.switch_page("pages/1_Radar_Mercado.py")
-    
-    with col_b:
-        if st.button("Screener Pro", use_container_width=True):
-            st.switch_page("pages/2_Screener_Pro.py")
-    
-    with col_c:
-        if st.button("Análise de Ativo", use_container_width=True):
-            st.switch_page("pages/3_Analise_Ativo.py")
-    
-    with col_d:
-        if st.button("Volume & Liquidez", use_container_width=True):
-            st.switch_page("pages/5_Volume_Negociacao.py")
-    
-    with col_e:
-        if st.button("Auditoria", use_container_width=True):
-            st.switch_page("pages/4_Auditoria.py")
+    c_a, c_b, c_c = st.columns(3)
+    if c_a.button("Radar", use_container_width=True): st.switch_page("pages/1_Radar_Mercado.py")
+    if c_b.button("Screener", use_container_width=True): st.switch_page("pages/2_Screener_Pro.py")
+    if c_c.button("Auditoria", use_container_width=True): st.switch_page("pages/4_Auditoria.py")
 
 else:
-    st.error("Nenhum dado disponível. Verifique se o banco de dados está configurado corretamente.")
-    st.info("""
-    ### Para começar:
-    
-    1. Execute o script `extrator_snd.py` para coletar dados do SND
-    2. O banco de dados `debentures_anbima.db` deve estar na pasta `/data`
-    3. Reinicie a aplicação
-    """)
-
-# ===== FOOTER =====
-st.divider()
-st.markdown("""
-<div style='text-align: center; color: #666; padding: 20px;'>
-    <p><strong>BondTrack v1.2</strong> | Plataforma de Análise de Debêntures</p>
-    <p>Dados: SND + ANBIMA | Curva de Juros: ANBIMA | Atualização Diária</p>
-</div>
-""", unsafe_allow_html=True)
+    st.error("Banco de dados não encontrado.")
