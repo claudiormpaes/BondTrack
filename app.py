@@ -107,6 +107,14 @@ if data_ref:
         else: curva_disponivel = False
     except: curva_disponivel = False
     
+    # --- CORREÇÃO DE TIPOS (EVITA O CRASH DO NLARGEST) ---
+    # Força a conversão para numérico, transformando erros em NaN
+    cols_numericas = ['taxa', 'duration', 'spread_bps', 'volume_total']
+    for col in cols_numericas:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    # -----------------------------------------------------
+
     volume_summary = engine.get_volume_summary()
     
     # ===== KPIs =====
@@ -126,7 +134,9 @@ if data_ref:
     c4.metric("Duration", f"{df_dur['duration'].mean():.2f} anos" if not df_dur.empty else "0")
     
     if curva_disponivel and 'spread_bps' in df.columns:
-        spr = df[df['spread_bps'].notna()]['spread_bps'].mean()
+        # Pega apenas spreads válidos (não nulos) para a média
+        df_spr = df[df['spread_bps'].notna()]
+        spr = df_spr['spread_bps'].mean() if not df_spr.empty else 0
         c5.metric("Spread", f"{spr:.0f} bps")
     else: c5.metric("Spread", "N/D")
     
@@ -157,7 +167,7 @@ if data_ref:
             
     st.divider()
     
-    # ===== DESTAQUES (TABELAS CORRIGIDAS COM column_config) =====
+    # ===== DESTAQUES =====
     st.markdown("### Destaques")
     cd1, cd2 = st.columns(2)
     
@@ -168,50 +178,63 @@ if data_ref:
             if 'spread_bps' in df: cols.append('spread_bps')
             cols = [c for c in cols if c in df.columns]
             
-            top_tx = df[df['taxa']>0].nlargest(5, 'taxa')[cols]
+            # Filtra NaN antes do nlargest para segurança extra
+            df_taxa_clean = df[df['taxa'].notna() & (df['taxa'] > 0)]
             
-            st.dataframe(
-                top_tx,
-                column_config={
-                    "taxa": st.column_config.NumberColumn("Taxa", format="%.2f%%"),
-                    "spread_bps": st.column_config.NumberColumn("Spread", format="%.0f bps"),
-                },
-                hide_index=True, 
-                use_container_width=True
-            )
+            if not df_taxa_clean.empty:
+                top_tx = df_taxa_clean.nlargest(5, 'taxa')[cols]
+                
+                st.dataframe(
+                    top_tx,
+                    column_config={
+                        "taxa": st.column_config.NumberColumn("Taxa", format="%.2f%%"),
+                        "spread_bps": st.column_config.NumberColumn("Spread", format="%.0f bps"),
+                    },
+                    hide_index=True, 
+                    use_container_width=True
+                )
+            else:
+                st.info("Sem dados de taxa.")
             
     with cd2:
         st.markdown("#### Maiores Durations")
         if 'duration' in df:
             cols = ['codigo', 'emissor', 'duration']
             cols = [c for c in cols if c in df.columns]
-            top_dur = df[df['duration']>0].nlargest(5, 'duration')[cols]
             
-            st.dataframe(
-                top_dur,
-                column_config={
-                    "duration": st.column_config.NumberColumn("Duration (Anos)", format="%.2f")
-                },
-                hide_index=True, 
-                use_container_width=True
-            )
+            df_dur_clean = df[df['duration'].notna() & (df['duration'] > 0)]
+            
+            if not df_dur_clean.empty:
+                top_dur = df_dur_clean.nlargest(5, 'duration')[cols]
+                st.dataframe(
+                    top_dur,
+                    column_config={
+                        "duration": st.column_config.NumberColumn("Duration (Anos)", format="%.2f")
+                    },
+                    hide_index=True, 
+                    use_container_width=True
+                )
+            else:
+                st.info("Sem dados de duration.")
 
     col_d3, col_d4 = st.columns(2)
     
     with col_d3:
         st.markdown("#### IPCA Incentivados")
         if 'categoria_grafico' in df:
-            df_inc = df[df['categoria_grafico'] == 'IPCA Incentivado']
+            df_inc = df[df['categoria_grafico'] == 'IPCA Incentivado'].copy()
             if not df_inc.empty:
                 cols_inc = ['codigo', 'emissor', 'taxa']
                 if 'spread_bps' in df: cols_inc.append('spread_bps')
                 cols_inc = [c for c in cols_inc if c in df.columns]
                 
-                # Ordena por spread se existir, senão por taxa
-                if 'spread_bps' in df_inc.columns:
+                # Lógica Segura para Ordenação
+                if 'spread_bps' in df_inc.columns and df_inc['spread_bps'].count() > 0:
                     top_inc = df_inc.nlargest(5, 'spread_bps')[cols_inc]
-                else:
+                elif 'taxa' in df_inc.columns:
                     top_inc = df_inc.nlargest(5, 'taxa')[cols_inc]
+                else:
+                    top_inc = df_inc.head(5)[cols_inc]
                 
                 st.dataframe(
                     top_inc,
@@ -230,7 +253,10 @@ if data_ref:
         try:
             df_vol = engine.get_top_volume(5)
             if not df_vol.empty:
-                # Prepara colunas
+                # Garante numérico aqui também
+                if 'volume_total' in df_vol.columns:
+                    df_vol['volume_total'] = pd.to_numeric(df_vol['volume_total'], errors='coerce')
+                
                 cols_v = ['codigo', 'emissor', 'volume_total']
                 cols_v = [c for c in cols_v if c in df_vol.columns]
                 
