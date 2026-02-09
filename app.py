@@ -129,7 +129,7 @@ with st.sidebar:
     st.markdown("### 📊 Status dos Dados")
     
     try:
-        db_status = engine.get_database_status(data_ref if data_ref else None)
+        db_status = engine.get_database_status_full(data_ref if data_ref else None)
         
         # SND Cadastro
         if db_status['snd_cadastro']['loaded'] and db_status['snd_cadastro']['count'] > 0:
@@ -143,13 +143,15 @@ with st.sidebar:
         else:
             st.markdown("🔴 **SND Negociação** (sem dados)")
         
-        # ANBIMA Indicativa (antes ANBIMA Preços)
-        if db_status['anbima_precos']['loaded'] and db_status['anbima_precos']['count'] > 0:
-            st.markdown(f"✅ **ANBIMA Indicativa** ({db_status['anbima_precos']['count']:,} registros)")
+        # ANBIMA Indicativa (Taxas de Referência)
+        if db_status.get('anbima_indicativa', {}).get('loaded') and db_status['anbima_indicativa']['count'] > 0:
+            st.markdown(f"✅ **ANBIMA Indicativa** ({db_status['anbima_indicativa']['count']:,} registros)")
+        elif db_status['anbima_precos']['loaded'] and db_status['anbima_precos']['count'] > 0:
+            st.markdown(f"✅ **ANBIMA Preços** ({db_status['anbima_precos']['count']:,} registros)")
         else:
             st.markdown("🔴 **ANBIMA Indicativa** (sem dados)")
         
-        # ANBIMA ETTJ (antes ANBIMA Curvas)
+        # ANBIMA ETTJ (Curvas)
         if db_status['anbima_curvas']['loaded'] and db_status['anbima_curvas']['count'] > 0:
             st.markdown(f"✅ **ANBIMA ETTJ** ({db_status['anbima_curvas']['count']:,} pontos)")
         else:
@@ -579,7 +581,7 @@ if data_ref:
     # ===== ACESSO RÁPIDO =====
     st.markdown("### Acesso Rápido")
     
-    col_a, col_b, col_c, col_d = st.columns(4)
+    col_a, col_b, col_c, col_d, col_e = st.columns(5)
     
     with col_a:
         if st.button("Radar de Mercado", use_container_width=True):
@@ -594,6 +596,10 @@ if data_ref:
             st.switch_page("pages/3_Analise_Ativo.py")
     
     with col_d:
+        if st.button("Volume & Liquidez", use_container_width=True):
+            st.switch_page("pages/5_Volume_Negociacao.py")
+    
+    with col_e:
         if st.button("Auditoria", use_container_width=True):
             st.switch_page("pages/4_Auditoria.py")
 
