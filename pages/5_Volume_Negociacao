@@ -1,0 +1,518 @@
+"""
+BondTrack - Análise de Volume de Negociação
+Página dedicada a análises de volume, liquidez e detecção de negociações atípicas.
+"""
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import sys
+import os
+
+# Adiciona o diretório raiz ao path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src import data_engine as engine
+from src.visuals import COLOR_SCHEME
+
+# --- CONFIGURAÇÃO DA PÁGINA ---
+st.set_page_config(
+    page_title="Volume de Negociação | BondTrack",
+    page_icon="📊",
+    layout="wide"
+)
+
+# --- ESTILO CSS ---
+st.markdown("""
+<style>
+    .metric-card {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        border-radius: 10px;
+        padding: 20px;
+        text-align: center;
+        border: 1px solid #0f3460;
+    }
+    .metric-value {
+        font-size: 2rem;
+        font-weight: bold;
+        color: #00d4ff;
+    }
+    .metric-label {
+        color: #8892b0;
+        font-size: 0.9rem;
+    }
+    .alert-box {
+        background-color: rgba(255, 107, 107, 0.1);
+        border-left: 4px solid #ff6b6b;
+        padding: 15px;
+        border-radius: 5px;
+        margin: 10px 0;
+    }
+    .success-box {
+        background-color: rgba(0, 255, 136, 0.1);
+        border-left: 4px solid #00ff88;
+        padding: 15px;
+        border-radius: 5px;
+        margin: 10px 0;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# --- TÍTULO ---
+st.title("📊 Análise de Volume de Negociação")
+st.markdown("Monitoramento de liquidez, volume negociado e detecção de negociações atípicas")
+
+# --- CARREGAR DADOS ---
+@st.cache_data(ttl=60)
+def carregar_dados_volume():
+    """Carrega dados de volume do banco"""
+    df_historico = engine.load_volume_historico(dias=30)
+    df_atual = engine.load_volume_por_ativo(limit=100)
+    return df_historico, df_atual
+
+df_historico, df_atual = carregar_dados_volume()
+
+# Verifica se temos dados
+if df_atual.empty:
+    st.warning("⚠️ Nenhum dado de volume disponível. Execute o ETL: `python etl_precos_snd.py`")
+    st.stop()
+
+# --- SIDEBAR ---
+st.sidebar.header("Filtros de Volume")
+
+# Data de referência
+if not df_historico.empty and 'data_base' in df_historico.columns:
+    datas_disponiveis = sorted(df_historico['data_base'].unique(), reverse=True)
+    data_selecionada = st.sidebar.selectbox(
+        "Data de Referência",
+        options=datas_disponiveis,
+        index=0
+    )
+else:
+    data_selecionada = None
+
+# Threshold para detecção de outliers
+threshold_zscore = st.sidebar.slider(
+    "Sensibilidade Outliers (Z-Score)",
+    min_value=1.0,
+    max_value=4.0,
+    value=2.0,
+    step=0.5,
+    help="Quanto menor, mais sensível à detecção de anomalias"
+)
+
+# Quantidade de ativos no top
+top_n = st.sidebar.slider(
+    "Top N Ativos",
+    min_value=5,
+    max_value=30,
+    value=10
+)
+
+# --- MÉTRICAS PRINCIPAIS ---
+st.markdown("### Resumo do Mercado")
+
+# Calcula estatísticas
+if not df_atual.empty:
+    vol_total = df_atual['volume_total'].sum() if 'volume_total' in df_atual.columns else 0
+    qtd_ativos = df_atual['codigo'].nunique() if 'codigo' in df_atual.columns else len(df_atual)
+    total_negocios = df_atual['numero_negocios'].sum() if 'numero_negocios' in df_atual.columns else 0
+    ticket_medio = vol_total / total_negocios if total_negocios > 0 else 0
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric(
+            "Volume Total",
+            f"R$ {vol_total/1e6:,.1f}M" if vol_total > 1e6 else f"R$ {vol_total:,.0f}",
+            help="Volume total negociado no dia"
+        )
+    
+    with col2:
+        st.metric(
+            "Ativos Negociados",
+            f"{qtd_ativos:,}",
+            help="Quantidade de ativos com negociação"
+        )
+    
+    with col3:
+        st.metric(
+            "Total de Negócios",
+            f"{int(total_negocios):,}",
+            help="Número total de transações"
+        )
+    
+    with col4:
+        st.metric(
+            "Ticket Médio",
+            f"R$ {ticket_medio:,.0f}" if ticket_medio > 0 else "N/A",
+            help="Valor médio por negócio"
+        )
+
+# --- GRÁFICOS ---
+st.markdown("---")
+
+# Tabs para diferentes visualizações
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📈 Evolução Histórica",
+    "🏆 Top Ativos",
+    "🎯 Detecção de Outliers",
+    "📊 Distribuição"
+])
+
+# --- TAB 1: EVOLUÇÃO HISTÓRICA ---
+with tab1:
+    if not df_historico.empty:
+        st.subheader("Evolução do Volume de Negociação")
+        
+        # Gráfico de linha com volume
+        fig_hist = go.Figure()
+        
+        fig_hist.add_trace(go.Scatter(
+            x=df_historico['data_base'],
+            y=df_historico['volume_total'],
+            mode='lines+markers',
+            name='Volume Total',
+            line=dict(color='#00d4ff', width=2),
+            marker=dict(size=8),
+            fill='tozeroy',
+            fillcolor='rgba(0, 212, 255, 0.1)'
+        ))
+        
+        # Adiciona média móvel
+        if len(df_historico) >= 5:
+            df_historico['mm5'] = df_historico['volume_total'].rolling(window=5).mean()
+            fig_hist.add_trace(go.Scatter(
+                x=df_historico['data_base'],
+                y=df_historico['mm5'],
+                mode='lines',
+                name='Média Móvel 5d',
+                line=dict(color='#ff6b6b', width=2, dash='dash')
+            ))
+        
+        fig_hist.update_layout(
+            title="Volume Total por Dia",
+            xaxis_title="Data",
+            yaxis_title="Volume (R$)",
+            template="plotly_dark",
+            height=400,
+            showlegend=True,
+            legend=dict(x=0, y=1.1, orientation='h')
+        )
+        
+        st.plotly_chart(fig_hist, use_container_width=True)
+        
+        # Gráfico de ativos negociados
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            fig_ativos = px.bar(
+                df_historico.sort_values('data_base'),
+                x='data_base',
+                y='qtd_ativos',
+                title="Quantidade de Ativos Negociados",
+                color_discrete_sequence=['#00ff88']
+            )
+            fig_ativos.update_layout(template="plotly_dark", height=300)
+            st.plotly_chart(fig_ativos, use_container_width=True)
+        
+        with col2:
+            fig_negocios = px.bar(
+                df_historico.sort_values('data_base'),
+                x='data_base',
+                y='total_negocios',
+                title="Número de Negócios por Dia",
+                color_discrete_sequence=['#ffd93d']
+            )
+            fig_negocios.update_layout(template="plotly_dark", height=300)
+            st.plotly_chart(fig_negocios, use_container_width=True)
+    else:
+        st.info("Dados históricos não disponíveis.")
+
+# --- TAB 2: TOP ATIVOS ---
+with tab2:
+    st.subheader(f"Top {top_n} Ativos por Volume")
+    
+    if not df_atual.empty:
+        # Top N por volume
+        df_top = df_atual.nlargest(top_n, 'volume_total') if 'volume_total' in df_atual.columns else df_atual.head(top_n)
+        
+        # Gráfico de barras horizontais
+        fig_top = px.bar(
+            df_top,
+            y='codigo',
+            x='volume_total',
+            orientation='h',
+            title=f"Top {top_n} Ativos por Volume Negociado",
+            color='volume_total',
+            color_continuous_scale='Blues',
+            text='volume_total'
+        )
+        
+        fig_top.update_traces(
+            texttemplate='R$ %{x:,.0f}',
+            textposition='outside'
+        )
+        
+        fig_top.update_layout(
+            template="plotly_dark",
+            height=max(400, top_n * 35),
+            showlegend=False,
+            yaxis=dict(categoryorder='total ascending'),
+            coloraxis_showscale=False
+        )
+        
+        st.plotly_chart(fig_top, use_container_width=True)
+        
+        # Tabela detalhada
+        with st.expander("Ver Tabela Detalhada"):
+            cols_mostrar = ['codigo', 'emissor', 'volume_total', 'numero_negocios', 'pu_medio', 'data_base']
+            cols_disponiveis = [c for c in cols_mostrar if c in df_top.columns]
+            
+            df_display = df_top[cols_disponiveis].copy()
+            
+            # Formata valores
+            if 'volume_total' in df_display.columns:
+                df_display['volume_total'] = df_display['volume_total'].apply(lambda x: f"R$ {x:,.0f}")
+            if 'pu_medio' in df_display.columns:
+                df_display['pu_medio'] = df_display['pu_medio'].apply(lambda x: f"R$ {x:,.2f}" if pd.notna(x) else "N/A")
+            
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+# --- TAB 3: DETECÇÃO DE OUTLIERS ---
+with tab3:
+    st.subheader("🚨 Detecção de Negociações Atípicas")
+    
+    st.markdown(f"""
+    **Critérios de detecção (Z-Score > {threshold_zscore}):**
+    - **Volume alto**: Volume muito acima da média do mercado
+    - **Concentração**: Poucos negócios com volume muito alto
+    - **Ticket alto**: Valor por negócio muito acima do normal
+    """)
+    
+    if not df_atual.empty:
+        # Aplica detecção de outliers
+        df_analise = engine.detectar_negociacoes_atipicas(
+            df_atual, 
+            threshold_zscore=threshold_zscore
+        )
+        
+        # Filtra atípicos
+        df_atipicos = df_analise[df_analise['atipico'] == True]
+        
+        if not df_atipicos.empty:
+            st.markdown(f"""
+            <div class="alert-box">
+                <strong>⚠️ {len(df_atipicos)} negociações atípicas detectadas!</strong><br>
+                Estes ativos apresentam comportamento fora do padrão normal.
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Tabela de atípicos
+            cols_atipicos = ['codigo', 'emissor', 'volume_total', 'numero_negocios', 
+                           'zscore_volume', 'ticket_medio', 'motivo_atipicidade']
+            cols_disponiveis = [c for c in cols_atipicos if c in df_atipicos.columns]
+            
+            df_show = df_atipicos[cols_disponiveis].copy()
+            
+            # Formata
+            if 'volume_total' in df_show.columns:
+                df_show['volume_total'] = df_show['volume_total'].apply(lambda x: f"R$ {x:,.0f}")
+            if 'zscore_volume' in df_show.columns:
+                df_show['zscore_volume'] = df_show['zscore_volume'].apply(lambda x: f"{x:.2f}σ")
+            if 'ticket_medio' in df_show.columns:
+                df_show['ticket_medio'] = df_show['ticket_medio'].apply(lambda x: f"R$ {x:,.0f}" if pd.notna(x) and x > 0 else "N/A")
+            
+            st.dataframe(
+                df_show.sort_values('zscore_volume' if 'zscore_volume' in df_atipicos.columns else 'volume_total', ascending=False),
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Gráfico scatter de outliers
+            st.markdown("#### Visualização de Outliers")
+            
+            fig_scatter = px.scatter(
+                df_analise,
+                x='numero_negocios' if 'numero_negocios' in df_analise.columns else df_analise.index,
+                y='volume_total' if 'volume_total' in df_analise.columns else df_analise.index,
+                color='atipico',
+                color_discrete_map={True: '#ff6b6b', False: '#00d4ff'},
+                hover_data=['codigo'] if 'codigo' in df_analise.columns else None,
+                title="Distribuição: Volume x Número de Negócios",
+                labels={
+                    'numero_negocios': 'Número de Negócios',
+                    'volume_total': 'Volume Total (R$)',
+                    'atipico': 'Atípico'
+                }
+            )
+            
+            fig_scatter.update_layout(
+                template="plotly_dark",
+                height=400
+            )
+            
+            st.plotly_chart(fig_scatter, use_container_width=True)
+            
+        else:
+            st.markdown("""
+            <div class="success-box">
+                <strong>✅ Nenhuma negociação atípica detectada!</strong><br>
+                Todas as negociações estão dentro dos parâmetros normais.
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # Histograma de Z-Scores
+        st.markdown("#### Distribuição de Z-Scores de Volume")
+        
+        if 'zscore_volume' in df_analise.columns:
+            fig_hist_z = px.histogram(
+                df_analise,
+                x='zscore_volume',
+                nbins=30,
+                title="Distribuição dos Z-Scores de Volume",
+                color_discrete_sequence=['#00d4ff']
+            )
+            
+            # Adiciona linhas de threshold
+            fig_hist_z.add_vline(
+                x=threshold_zscore,
+                line_dash="dash",
+                line_color="red",
+                annotation_text=f"Threshold ({threshold_zscore}σ)"
+            )
+            fig_hist_z.add_vline(
+                x=-threshold_zscore,
+                line_dash="dash",
+                line_color="red"
+            )
+            
+            fig_hist_z.update_layout(
+                template="plotly_dark",
+                height=350,
+                xaxis_title="Z-Score",
+                yaxis_title="Frequência"
+            )
+            
+            st.plotly_chart(fig_hist_z, use_container_width=True)
+
+# --- TAB 4: DISTRIBUIÇÃO ---
+with tab4:
+    st.subheader("Distribuição de Volume")
+    
+    if not df_atual.empty:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Histograma de volume
+            fig_dist = px.histogram(
+                df_atual,
+                x='volume_total',
+                nbins=30,
+                title="Distribuição de Volume por Ativo",
+                color_discrete_sequence=['#00ff88']
+            )
+            fig_dist.update_layout(
+                template="plotly_dark",
+                height=350,
+                xaxis_title="Volume (R$)",
+                yaxis_title="Frequência"
+            )
+            st.plotly_chart(fig_dist, use_container_width=True)
+        
+        with col2:
+            # Box plot
+            if 'volume_total' in df_atual.columns:
+                fig_box = px.box(
+                    df_atual,
+                    y='volume_total',
+                    title="Box Plot de Volume",
+                    color_discrete_sequence=['#ffd93d']
+                )
+                fig_box.update_layout(
+                    template="plotly_dark",
+                    height=350,
+                    yaxis_title="Volume (R$)"
+                )
+                st.plotly_chart(fig_box, use_container_width=True)
+        
+        # Concentração de volume
+        st.markdown("#### Concentração de Volume")
+        
+        if len(df_atual) > 0:
+            df_sorted = df_atual.sort_values('volume_total', ascending=False)
+            df_sorted['volume_acum'] = df_sorted['volume_total'].cumsum()
+            df_sorted['pct_acum'] = df_sorted['volume_acum'] / df_sorted['volume_total'].sum() * 100
+            df_sorted['rank'] = range(1, len(df_sorted) + 1)
+            
+            # Encontra quantos ativos representam 80% do volume
+            ativos_80 = df_sorted[df_sorted['pct_acum'] <= 80]['rank'].max()
+            
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                fig_pareto = go.Figure()
+                
+                fig_pareto.add_trace(go.Bar(
+                    x=df_sorted['rank'].head(20),
+                    y=df_sorted['volume_total'].head(20),
+                    name='Volume',
+                    marker_color='#00d4ff'
+                ))
+                
+                fig_pareto.add_trace(go.Scatter(
+                    x=df_sorted['rank'].head(20),
+                    y=df_sorted['pct_acum'].head(20),
+                    name='% Acumulado',
+                    yaxis='y2',
+                    line=dict(color='#ff6b6b', width=2),
+                    mode='lines+markers'
+                ))
+                
+                fig_pareto.update_layout(
+                    title="Curva de Pareto do Volume",
+                    template="plotly_dark",
+                    height=400,
+                    yaxis=dict(title='Volume (R$)'),
+                    yaxis2=dict(
+                        title='% Acumulado',
+                        overlaying='y',
+                        side='right',
+                        range=[0, 105]
+                    ),
+                    legend=dict(x=0.7, y=1)
+                )
+                
+                st.plotly_chart(fig_pareto, use_container_width=True)
+            
+            with col2:
+                st.markdown("##### Índice de Concentração")
+                
+                if ativos_80:
+                    st.metric(
+                        "Ativos com 80% do Volume",
+                        f"{ativos_80}",
+                        f"{ativos_80/len(df_atual)*100:.1f}% do total"
+                    )
+                
+                # Top 3 concentração
+                top3_pct = df_sorted.head(3)['volume_total'].sum() / df_sorted['volume_total'].sum() * 100
+                st.metric(
+                    "Top 3 Ativos",
+                    f"{top3_pct:.1f}%",
+                    "do volume total"
+                )
+                
+                # HHI simplificado
+                market_shares = df_sorted['volume_total'] / df_sorted['volume_total'].sum()
+                hhi = (market_shares ** 2).sum() * 10000
+                
+                st.metric(
+                    "Índice HHI",
+                    f"{hhi:,.0f}",
+                    "Alta concentração" if hhi > 2500 else "Moderada" if hhi > 1500 else "Baixa"
+                )
+
+# --- RODAPÉ ---
+st.markdown("---")
+st.caption("BondTrack | Análise de Volume de Negociação | Dados: SND")
