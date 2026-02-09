@@ -582,3 +582,472 @@ def get_consolidation_stats(df):
         stats[f'{key}_pct'] = (stats[key] / total * 100) if total > 0 else 0
     
     return stats
+
+
+# === FUNÇÕES PARA ANÁLISE POR EMPRESA ===
+
+def get_empresas_emissoras(df=None):
+    """
+    Retorna lista de empresas emissoras únicas.
+    Se df não for fornecido, carrega do cadastro.
+    """
+    if df is not None and 'emissor' in df.columns:
+        empresas = df['emissor'].dropna().unique()
+        return sorted([e for e in empresas if e and e != 'N/D'])
+    
+    # Fallback: carrega do cadastro no banco
+    if not os.path.exists(DB_DEBENTURES):
+        return []
+    
+    try:
+        conn = sqlite3.connect(DB_DEBENTURES)
+        
+        # Tenta várias colunas possíveis
+        colunas_emissor = ['Empresa', 'emissor', 'Razao Social', 'Nome Emissor', 'nome']
+        
+        for col in colunas_emissor:
+            try:
+                df = pd.read_sql(f'SELECT DISTINCT "{col}" as emissor FROM cadastro_snd', conn)
+                if not df.empty:
+                    empresas = df['emissor'].dropna().unique()
+                    conn.close()
+                    return sorted([e for e in empresas if e and str(e).strip() != ''])
+            except:
+                continue
+        
+        conn.close()
+        return []
+    except:
+        return []
+
+
+def get_debentures_por_empresa(empresa_nome, df=None):
+    """
+    Retorna todas as debêntures de uma empresa específica.
+    Busca por nome do emissor (match parcial case-insensitive).
+    """
+    if df is None:
+        return pd.DataFrame()
+    
+    if 'emissor' not in df.columns:
+        return pd.DataFrame()
+    
+    # Busca case-insensitive com match parcial
+    empresa_lower = empresa_nome.lower().strip()
+    mask = df['emissor'].fillna('').str.lower().str.contains(empresa_lower, regex=False)
+    
+    return df[mask].copy()
+
+
+def get_resumo_empresa(df_empresa):
+    """
+    Gera resumo consolidado de uma empresa baseado em suas debêntures.
+    """
+    if df_empresa.empty:
+        return None
+    
+    resumo = {
+        'total_debentures': len(df_empresa),
+        'debentures_ativas': 0,
+        'debentures_vencidas': 0,
+        'valor_total_emitido': 0,
+        'volume_negociado': 0,
+        'indexadores': {},
+        'categorias': {},
+        'taxa_media': 0,
+        'duration_media': 0,
+        'spread_medio': None,
+        'proximos_vencimentos': []
+    }
+    
+    # Status (ativo/vencido) - baseado em data de vencimento se disponível
+    hoje = datetime.now()
+    if 'vencimento' in df_empresa.columns or 'data_vencimento' in df_empresa.columns:
+        col_venc = 'vencimento' if 'vencimento' in df_empresa.columns else 'data_vencimento'
+        for _, row in df_empresa.iterrows():
+            try:
+                venc_str = str(row[col_venc])
+                # Tenta vários formatos
+                for fmt in ['%d/%m/%Y', '%Y-%m-%d', '%d-%m-%Y']:
+                    try:
+                        venc_date = datetime.strptime(venc_str, fmt)
+                        if venc_date > hoje:
+                            resumo['debentures_ativas'] += 1
+                        else:
+                            resumo['debentures_vencidas'] += 1
+                        break
+                    except:
+                        continue
+            except:
+                resumo['debentures_ativas'] += 1  # Assume ativa se não conseguir parsear
+    else:
+        # Se não tiver data de vencimento, assume todas ativas
+        resumo['debentures_ativas'] = len(df_empresa)
+    
+    # Volume negociado
+    if 'volume' in df_empresa.columns:
+        resumo['volume_negociado'] = df_empresa['volume'].sum()
+    elif 'volume_total' in df_empresa.columns:
+        resumo['volume_negociado'] = df_empresa['volume_total'].sum()
+    
+    # Distribuição por indexador
+    if 'indexador' in df_empresa.columns:
+        resumo['indexadores'] = df_empresa['indexador'].value_counts().to_dict()
+    
+    # Distribuição por categoria
+    if 'categoria_grafico' in df_empresa.columns:
+        resumo['categorias'] = df_empresa['categoria_grafico'].value_counts().to_dict()
+    
+    # Taxa média
+    if 'taxa' in df_empresa.columns:
+        df_taxa = df_empresa[df_empresa['taxa'] > 0]
+        if not df_taxa.empty:
+            resumo['taxa_media'] = df_taxa['taxa'].mean()
+    
+    # Duration média
+    if 'duration' in df_empresa.columns:
+        df_dur = df_empresa[df_empresa['duration'] > 0]
+        if not df_dur.empty:
+            resumo['duration_media'] = df_dur['duration'].mean()
+    
+    # Spread médio
+    if 'spread_bps' in df_empresa.columns:
+        df_spread = df_empresa[df_empresa['spread_bps'].notna()]
+        if not df_spread.empty:
+            resumo['spread_medio'] = df_spread['spread_bps'].mean()
+    
+    # Próximos vencimentos (até 5)
+    if 'vencimento' in df_empresa.columns or 'data_vencimento' in df_empresa.columns:
+        col_venc = 'vencimento' if 'vencimento' in df_empresa.columns else 'data_vencimento'
+        proximos = []
+        for _, row in df_empresa.iterrows():
+            try:
+                venc_str = str(row[col_venc])
+                for fmt in ['%d/%m/%Y', '%Y-%m-%d', '%d-%m-%Y']:
+                    try:
+                        venc_date = datetime.strptime(venc_str, fmt)
+                        if venc_date > hoje:
+                            proximos.append({
+                                'codigo': row.get('codigo', 'N/D'),
+                                'vencimento': venc_str,
+                                'data': venc_date
+                            })
+                        break
+                    except:
+                        continue
+            except:
+                pass
+        
+        # Ordena por data e pega os 5 mais próximos
+        proximos.sort(key=lambda x: x.get('data', datetime.max))
+        resumo['proximos_vencimentos'] = [
+            {'codigo': p['codigo'], 'vencimento': p['vencimento']} 
+            for p in proximos[:5]
+        ]
+    
+    return resumo
+
+
+
+
+# === FUNÇÕES PARA TAXAS INDICATIVAS ANBIMA ===
+
+@st.cache_data(ttl=300)
+def load_taxas_indicativas(data_ref=None):
+    """
+    Carrega taxas indicativas da ANBIMA.
+    Se data_ref não for especificada, retorna a data mais recente.
+    """
+    if not os.path.exists(DB_DEBENTURES):
+        return pd.DataFrame()
+    
+    conn = sqlite3.connect(DB_DEBENTURES)
+    try:
+        if data_ref:
+            # Tenta formato BR e ISO
+            df = pd.read_sql(f"""
+                SELECT * FROM taxas_indicativas_anbima 
+                WHERE data_referencia = '{data_ref}'
+            """, conn)
+            
+            if df.empty:
+                try:
+                    dt_obj = datetime.strptime(data_ref, "%d/%m/%Y")
+                    date_iso = dt_obj.strftime("%Y-%m-%d")
+                    df = pd.read_sql(f"""
+                        SELECT * FROM taxas_indicativas_anbima 
+                        WHERE data_referencia = '{date_iso}'
+                    """, conn)
+                except:
+                    pass
+        else:
+            # Pega a data mais recente
+            df = pd.read_sql("""
+                SELECT * FROM taxas_indicativas_anbima 
+                WHERE data_referencia = (SELECT MAX(data_referencia) FROM taxas_indicativas_anbima)
+            """, conn)
+        
+        return df
+    except Exception as e:
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
+
+def get_taxas_indicativas_status():
+    """
+    Retorna status das taxas indicativas (para sidebar).
+    """
+    if not os.path.exists(DB_DEBENTURES):
+        return {'loaded': False, 'count': 0}
+    
+    try:
+        conn = sqlite3.connect(DB_DEBENTURES)
+        df = pd.read_sql("SELECT COUNT(*) as c FROM taxas_indicativas_anbima", conn)
+        conn.close()
+        return {'loaded': True, 'count': int(df.iloc[0]['c'])}
+    except:
+        return {'loaded': False, 'count': 0}
+
+
+# === FUNÇÕES PARA ANÁLISE DE VOLUME ===
+
+def load_volume_historico(dias=30):
+    """
+    Carrega histórico de volume de negociação dos últimos N dias.
+    """
+    if not os.path.exists(DB_DEBENTURES):
+        return pd.DataFrame()
+    
+    conn = sqlite3.connect(DB_DEBENTURES)
+    try:
+        df = pd.read_sql(f"""
+            SELECT 
+                data_base,
+                SUM(volume_total) as volume_total,
+                COUNT(DISTINCT codigo) as qtd_ativos,
+                SUM(numero_negocios) as total_negocios,
+                AVG(pu_medio) as pu_medio_geral
+            FROM negociacao_snd
+            GROUP BY data_base
+            ORDER BY data_base DESC
+            LIMIT {dias}
+        """, conn)
+        return df
+    except:
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
+
+def load_volume_por_ativo(data_ref=None, limit=50):
+    """
+    Carrega volume detalhado por ativo para uma data específica.
+    """
+    if not os.path.exists(DB_DEBENTURES):
+        return pd.DataFrame()
+    
+    conn = sqlite3.connect(DB_DEBENTURES)
+    try:
+        if data_ref:
+            try:
+                dt_obj = datetime.strptime(data_ref, "%d/%m/%Y")
+                date_iso = dt_obj.strftime("%Y-%m-%d")
+            except:
+                date_iso = data_ref
+            where_clause = f"WHERE data_base = '{date_iso}'"
+        else:
+            where_clause = "WHERE data_base = (SELECT MAX(data_base) FROM negociacao_snd)"
+        
+        df = pd.read_sql(f"""
+            SELECT *
+            FROM negociacao_snd
+            {where_clause}
+            ORDER BY volume_total DESC
+            LIMIT {limit}
+        """, conn)
+        return df
+    except:
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
+
+def get_volume_por_indexador(df):
+    """
+    Agrupa volume por indexador.
+    """
+    if df.empty or 'indexador' not in df.columns:
+        return pd.DataFrame()
+    
+    if 'volume' in df.columns:
+        vol_col = 'volume'
+    elif 'volume_total' in df.columns:
+        vol_col = 'volume_total'
+    else:
+        return pd.DataFrame()
+    
+    return df.groupby('indexador').agg({
+        vol_col: 'sum',
+        'codigo': 'count'
+    }).reset_index().rename(columns={'codigo': 'qtd_ativos'})
+
+
+# === FUNÇÕES PARA DETECÇÃO DE NEGOCIAÇÕES ATÍPICAS ===
+
+def detectar_negociacoes_atipicas(df, threshold_zscore=2.0, threshold_preco_pct=5.0):
+    """
+    Detecta negociações atípicas baseado em:
+    1. Volume muito acima da média (Z-score > threshold)
+    2. Preço muito diferente do PU indicativo
+    3. Número de negócios atípico
+    
+    Args:
+        df: DataFrame com dados de negociação
+        threshold_zscore: Threshold para Z-score (padrão 2.0 = ~95%)
+        threshold_preco_pct: Diferença % máxima aceitável entre PU negociado e indicativo
+    
+    Returns:
+        DataFrame com colunas adicionais: atipico, motivo_atipicidade, zscore_volume
+    """
+    if df.empty:
+        return df
+    
+    df_analise = df.copy()
+    df_analise['atipico'] = False
+    df_analise['motivo_atipicidade'] = ''
+    df_analise['zscore_volume'] = 0.0
+    df_analise['desvio_preco_pct'] = 0.0
+    
+    # 1. Z-Score de Volume
+    vol_col = 'volume_total' if 'volume_total' in df_analise.columns else 'volume' if 'volume' in df_analise.columns else None
+    
+    if vol_col and df_analise[vol_col].std() > 0:
+        media_vol = df_analise[vol_col].mean()
+        std_vol = df_analise[vol_col].std()
+        df_analise['zscore_volume'] = (df_analise[vol_col] - media_vol) / std_vol
+        
+        # Marca como atípico se Z-score alto
+        mask_volume = df_analise['zscore_volume'] > threshold_zscore
+        df_analise.loc[mask_volume, 'atipico'] = True
+        df_analise.loc[mask_volume, 'motivo_atipicidade'] = df_analise.loc[mask_volume, 'motivo_atipicidade'] + 'Volume alto; '
+    
+    # 2. Z-Score de Número de Negócios
+    neg_col = 'numero_negocios' if 'numero_negocios' in df_analise.columns else 'negocios' if 'negocios' in df_analise.columns else None
+    
+    if neg_col and df_analise[neg_col].std() > 0:
+        media_neg = df_analise[neg_col].mean()
+        std_neg = df_analise[neg_col].std()
+        zscore_neg = (df_analise[neg_col] - media_neg) / std_neg
+        
+        # Marca como atípico se poucos negócios com muito volume (concentração)
+        if vol_col:
+            mask_concentracao = (zscore_neg < -1) & (df_analise['zscore_volume'] > threshold_zscore)
+            df_analise.loc[mask_concentracao, 'atipico'] = True
+            df_analise.loc[mask_concentracao, 'motivo_atipicidade'] = df_analise.loc[mask_concentracao, 'motivo_atipicidade'] + 'Concentração; '
+    
+    # 3. Desvio de Preço (se tiver PU indicativo)
+    pu_neg_col = 'pu_medio' if 'pu_medio' in df_analise.columns else 'pu' if 'pu' in df_analise.columns else None
+    
+    if pu_neg_col and 'taxa_indicativa' in df_analise.columns:
+        # Compara com taxa indicativa se disponível
+        pass  # Implementação futura com merge de taxas indicativas
+    
+    # 4. Calcula ticket médio para análise
+    if vol_col and neg_col:
+        df_analise['ticket_medio'] = np.where(
+            df_analise[neg_col] > 0,
+            df_analise[vol_col] / df_analise[neg_col],
+            0
+        )
+        
+        # Ticket muito alto também é atípico
+        if df_analise['ticket_medio'].std() > 0:
+            media_ticket = df_analise['ticket_medio'].mean()
+            std_ticket = df_analise['ticket_medio'].std()
+            zscore_ticket = (df_analise['ticket_medio'] - media_ticket) / std_ticket
+            
+            mask_ticket = zscore_ticket > threshold_zscore
+            df_analise.loc[mask_ticket, 'atipico'] = True
+            df_analise.loc[mask_ticket, 'motivo_atipicidade'] = df_analise.loc[mask_ticket, 'motivo_atipicidade'] + 'Ticket alto; '
+    
+    # Limpa motivo
+    df_analise['motivo_atipicidade'] = df_analise['motivo_atipicidade'].str.rstrip('; ')
+    
+    return df_analise
+
+
+def get_estatisticas_volume(df):
+    """
+    Calcula estatísticas de volume para análise.
+    """
+    if df.empty:
+        return {}
+    
+    vol_col = 'volume_total' if 'volume_total' in df.columns else 'volume' if 'volume' in df.columns else None
+    neg_col = 'numero_negocios' if 'numero_negocios' in df.columns else 'negocios' if 'negocios' in df.columns else None
+    
+    stats = {
+        'volume_total': 0,
+        'volume_medio': 0,
+        'volume_mediana': 0,
+        'total_negocios': 0,
+        'ticket_medio': 0,
+        'qtd_ativos': df['codigo'].nunique() if 'codigo' in df.columns else len(df)
+    }
+    
+    if vol_col:
+        stats['volume_total'] = df[vol_col].sum()
+        stats['volume_medio'] = df[vol_col].mean()
+        stats['volume_mediana'] = df[vol_col].median()
+    
+    if neg_col:
+        stats['total_negocios'] = df[neg_col].sum()
+        
+        if vol_col and stats['total_negocios'] > 0:
+            stats['ticket_medio'] = stats['volume_total'] / stats['total_negocios']
+    
+    return stats
+
+
+def comparar_volume_historico(df_atual, df_historico):
+    """
+    Compara volume atual com histórico para detectar anomalias.
+    """
+    if df_atual.empty or df_historico.empty:
+        return None
+    
+    vol_col = 'volume_total' if 'volume_total' in df_historico.columns else 'volume'
+    
+    if vol_col not in df_historico.columns:
+        return None
+    
+    media_historica = df_historico[vol_col].mean()
+    std_historico = df_historico[vol_col].std()
+    
+    if std_historico == 0:
+        return None
+    
+    vol_atual = df_atual[vol_col].sum() if vol_col in df_atual.columns else 0
+    
+    return {
+        'volume_atual': vol_atual,
+        'media_historica': media_historica,
+        'std_historico': std_historico,
+        'zscore': (vol_atual - media_historica) / std_historico if std_historico > 0 else 0,
+        'variacao_pct': ((vol_atual - media_historica) / media_historica * 100) if media_historica > 0 else 0
+    }
+
+
+# === ATUALIZAÇÃO DO get_database_status PARA INCLUIR TAXAS INDICATIVAS ===
+
+def get_database_status_full(data_ref=None):
+    """
+    Versão completa do status do banco incluindo taxas indicativas.
+    """
+    status = get_database_status(data_ref)
+    
+    # Adiciona status das taxas indicativas
+    status['anbima_indicativa'] = get_taxas_indicativas_status()
+    
+    return status
