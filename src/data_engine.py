@@ -317,12 +317,7 @@ def get_data_quality_report(df):
         if c in df.columns:
             valid = df[c].notna().sum()
             if c in ['taxa', 'volume']: valid = (df[c] > 0).sum()
-            invalid = len(df) - valid
-            report["campos_completos"][c] = {
-                "validos": int(valid), 
-                "invalidos": int(invalid),
-                "percentual": round(valid/len(df)*100, 1) if len(df)>0 else 0
-            }
+            report["campos_completos"][c] = {"validos": int(valid), "percentual": round(valid/len(df)*100, 1) if len(df)>0 else 0}
             
     if 'codigo' in df.columns:
         report["duplicatas"] = int(df.duplicated(subset=['codigo']).sum())
@@ -389,13 +384,11 @@ def adicionar_spreads_ao_df(df_ativos, df_curva):
                 return None
             
             # SPREAD APENAS PARA IPCA E PRÉ
-            # CDI+ e %CDI não têm curva benchmark comparável
             if 'IPCA' in idx:
                 ref = 'taxa_ipca'
             elif 'PRÉ' in idx or 'PRE' in idx or 'PREFIXADO' in idx:
                 ref = 'taxa_pre'
             else:
-                # CDI, %CDI, IGP-M e outros: não calcula spread
                 return None
             
             bench = interpolar_taxa_curva(df_curva, d, ref)
@@ -411,12 +404,9 @@ def adicionar_spreads_ao_df(df_ativos, df_curva):
     def get_benchmark(row):
         idx = str(row.get('indexador', '')).upper()
         d = row.get('dias_interpolacao', 0)
-        if d <= 0:
-            return None
-        if 'IPCA' in idx:
-            return interpolar_taxa_curva(df_curva, d, 'taxa_ipca')
-        elif 'PRÉ' in idx or 'PRE' in idx or 'PREFIXADO' in idx:
-            return interpolar_taxa_curva(df_curva, d, 'taxa_pre')
+        if d <= 0: return None
+        if 'IPCA' in idx: return interpolar_taxa_curva(df_curva, d, 'taxa_ipca')
+        elif 'PRÉ' in idx or 'PRE' in idx: return interpolar_taxa_curva(df_curva, d, 'taxa_pre')
         return None
     
     df_ativos['taxa_benchmark'] = df_ativos.apply(get_benchmark, axis=1)
@@ -861,193 +851,3 @@ def load_volume_por_ativo(data_ref=None, limit=50):
         
         df = pd.read_sql(f"""
             SELECT *
-            FROM negociacao_snd
-            {where_clause}
-            ORDER BY volume_total DESC
-            LIMIT {limit}
-        """, conn)
-        return df
-    except:
-        return pd.DataFrame()
-    finally:
-        conn.close()
-
-
-def get_volume_por_indexador(df):
-    """
-    Agrupa volume por indexador.
-    """
-    if df.empty or 'indexador' not in df.columns:
-        return pd.DataFrame()
-    
-    if 'volume' in df.columns:
-        vol_col = 'volume'
-    elif 'volume_total' in df.columns:
-        vol_col = 'volume_total'
-    else:
-        return pd.DataFrame()
-    
-    return df.groupby('indexador').agg({
-        vol_col: 'sum',
-        'codigo': 'count'
-    }).reset_index().rename(columns={'codigo': 'qtd_ativos'})
-
-
-# === FUNÇÕES PARA DETECÇÃO DE NEGOCIAÇÕES ATÍPICAS ===
-
-def detectar_negociacoes_atipicas(df, threshold_zscore=2.0, threshold_preco_pct=5.0):
-    """
-    Detecta negociações atípicas baseado em:
-    1. Volume muito acima da média (Z-score > threshold)
-    2. Preço muito diferente do PU indicativo
-    3. Número de negócios atípico
-    
-    Args:
-        df: DataFrame com dados de negociação
-        threshold_zscore: Threshold para Z-score (padrão 2.0 = ~95%)
-        threshold_preco_pct: Diferença % máxima aceitável entre PU negociado e indicativo
-    
-    Returns:
-        DataFrame com colunas adicionais: atipico, motivo_atipicidade, zscore_volume
-    """
-    if df.empty:
-        return df
-    
-    df_analise = df.copy()
-    df_analise['atipico'] = False
-    df_analise['motivo_atipicidade'] = ''
-    df_analise['zscore_volume'] = 0.0
-    df_analise['desvio_preco_pct'] = 0.0
-    
-    # 1. Z-Score de Volume
-    vol_col = 'volume_total' if 'volume_total' in df_analise.columns else 'volume' if 'volume' in df_analise.columns else None
-    
-    if vol_col and df_analise[vol_col].std() > 0:
-        media_vol = df_analise[vol_col].mean()
-        std_vol = df_analise[vol_col].std()
-        df_analise['zscore_volume'] = (df_analise[vol_col] - media_vol) / std_vol
-        
-        # Marca como atípico se Z-score alto
-        mask_volume = df_analise['zscore_volume'] > threshold_zscore
-        df_analise.loc[mask_volume, 'atipico'] = True
-        df_analise.loc[mask_volume, 'motivo_atipicidade'] = df_analise.loc[mask_volume, 'motivo_atipicidade'] + 'Volume alto; '
-    
-    # 2. Z-Score de Número de Negócios
-    neg_col = 'numero_negocios' if 'numero_negocios' in df_analise.columns else 'negocios' if 'negocios' in df_analise.columns else None
-    
-    if neg_col and df_analise[neg_col].std() > 0:
-        media_neg = df_analise[neg_col].mean()
-        std_neg = df_analise[neg_col].std()
-        zscore_neg = (df_analise[neg_col] - media_neg) / std_neg
-        
-        # Marca como atípico se poucos negócios com muito volume (concentração)
-        if vol_col:
-            mask_concentracao = (zscore_neg < -1) & (df_analise['zscore_volume'] > threshold_zscore)
-            df_analise.loc[mask_concentracao, 'atipico'] = True
-            df_analise.loc[mask_concentracao, 'motivo_atipicidade'] = df_analise.loc[mask_concentracao, 'motivo_atipicidade'] + 'Concentração; '
-    
-    # 3. Desvio de Preço (se tiver PU indicativo)
-    pu_neg_col = 'pu_medio' if 'pu_medio' in df_analise.columns else 'pu' if 'pu' in df_analise.columns else None
-    
-    if pu_neg_col and 'taxa_indicativa' in df_analise.columns:
-        # Compara com taxa indicativa se disponível
-        pass  # Implementação futura com merge de taxas indicativas
-    
-    # 4. Calcula ticket médio para análise
-    if vol_col and neg_col:
-        df_analise['ticket_medio'] = np.where(
-            df_analise[neg_col] > 0,
-            df_analise[vol_col] / df_analise[neg_col],
-            0
-        )
-        
-        # Ticket muito alto também é atípico
-        if df_analise['ticket_medio'].std() > 0:
-            media_ticket = df_analise['ticket_medio'].mean()
-            std_ticket = df_analise['ticket_medio'].std()
-            zscore_ticket = (df_analise['ticket_medio'] - media_ticket) / std_ticket
-            
-            mask_ticket = zscore_ticket > threshold_zscore
-            df_analise.loc[mask_ticket, 'atipico'] = True
-            df_analise.loc[mask_ticket, 'motivo_atipicidade'] = df_analise.loc[mask_ticket, 'motivo_atipicidade'] + 'Ticket alto; '
-    
-    # Limpa motivo
-    df_analise['motivo_atipicidade'] = df_analise['motivo_atipicidade'].str.rstrip('; ')
-    
-    return df_analise
-
-
-def get_estatisticas_volume(df):
-    """
-    Calcula estatísticas de volume para análise.
-    """
-    if df.empty:
-        return {}
-    
-    vol_col = 'volume_total' if 'volume_total' in df.columns else 'volume' if 'volume' in df.columns else None
-    neg_col = 'numero_negocios' if 'numero_negocios' in df.columns else 'negocios' if 'negocios' in df.columns else None
-    
-    stats = {
-        'volume_total': 0,
-        'volume_medio': 0,
-        'volume_mediana': 0,
-        'total_negocios': 0,
-        'ticket_medio': 0,
-        'qtd_ativos': df['codigo'].nunique() if 'codigo' in df.columns else len(df)
-    }
-    
-    if vol_col:
-        stats['volume_total'] = df[vol_col].sum()
-        stats['volume_medio'] = df[vol_col].mean()
-        stats['volume_mediana'] = df[vol_col].median()
-    
-    if neg_col:
-        stats['total_negocios'] = df[neg_col].sum()
-        
-        if vol_col and stats['total_negocios'] > 0:
-            stats['ticket_medio'] = stats['volume_total'] / stats['total_negocios']
-    
-    return stats
-
-
-def comparar_volume_historico(df_atual, df_historico):
-    """
-    Compara volume atual com histórico para detectar anomalias.
-    """
-    if df_atual.empty or df_historico.empty:
-        return None
-    
-    vol_col = 'volume_total' if 'volume_total' in df_historico.columns else 'volume'
-    
-    if vol_col not in df_historico.columns:
-        return None
-    
-    media_historica = df_historico[vol_col].mean()
-    std_historico = df_historico[vol_col].std()
-    
-    if std_historico == 0:
-        return None
-    
-    vol_atual = df_atual[vol_col].sum() if vol_col in df_atual.columns else 0
-    
-    return {
-        'volume_atual': vol_atual,
-        'media_historica': media_historica,
-        'std_historico': std_historico,
-        'zscore': (vol_atual - media_historica) / std_historico if std_historico > 0 else 0,
-        'variacao_pct': ((vol_atual - media_historica) / media_historica * 100) if media_historica > 0 else 0
-    }
-
-
-# === ATUALIZAÇÃO DO get_database_status PARA INCLUIR TAXAS INDICATIVAS ===
-
-def get_database_status_full(data_ref=None):
-    """
-    Versão completa do status do banco incluindo taxas indicativas.
-    """
-    status = get_database_status(data_ref)
-    
-    # Adiciona status das taxas indicativas
-    status['anbima_indicativa'] = get_taxas_indicativas_status()
-    
-    return status
